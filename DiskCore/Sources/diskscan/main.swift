@@ -13,6 +13,7 @@ struct Arguments {
     var noCollapse = false
     var quiet = false
     var workers: Int?
+    var junk = false
 }
 
 func parseArguments() -> Arguments {
@@ -32,6 +33,8 @@ func parseArguments() -> Arguments {
         case "--workers", "-w":
             i += 1
             args.workers = i < raw.count ? Int(raw[i]) : nil
+        case "--junk":
+            args.junk = true
         case "--quiet", "-q":
             args.quiet = true
         case "--help", "-h":
@@ -123,6 +126,31 @@ extension String {
 
 print("\(formatBytes(sizes[0]))  \(store.name(of: 0))")
 if !arguments.quiet { printTree(0, depth: 1, prefix: "") }
+
+if arguments.junk {
+    let t0 = Date()
+    let report = JunkScanner.scan(store: store)
+    let ms = Date().timeIntervalSince(t0) * 1000
+    print("")
+    for category in report.populatedCategories {
+        let items = report.findings(in: category.id)
+        let total = items.reduce(Int64(0)) { $0 + $1.bytes }
+        print("\(category.title) — \(formatBytes(total))")
+        for item in items.prefix(6) {
+            let mark = item.safety == .safe ? " " : "!"
+            let short = item.path.replacingOccurrences(
+                of: NSHomeDirectory(), with: "~"
+            )
+            print("  \(mark) \(formatBytes(item.bytes).padded(to: 9))  \(short)")
+        }
+        if items.count > 6 { print("    … et \(items.count - 6) autres") }
+    }
+    print("")
+    print("TOTAL récupérable : \(formatBytes(report.totalBytes)) " +
+          "sur \(report.findings.count) éléments " +
+          "(analyse des règles : \(String(format: "%.0f", ms)) ms)")
+    exit(0)
+}
 
 // Layout cost, measured separately from the scan: the UI rebuilds this every
 // time you drill into a folder, so it has to stay in the low milliseconds.

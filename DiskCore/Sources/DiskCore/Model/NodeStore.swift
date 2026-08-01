@@ -153,6 +153,41 @@ public struct NodeStore: Sendable {
         }
     }
 
+    /// Raw name bytes, for comparing without building a `String`.
+    ///
+    /// The rule engine tests every directory in the tree against a handful of
+    /// names; going through `String` there would mean allocating one per node
+    /// just to throw it away.
+    public func nameBytes(of node: Int32) -> ArraySlice<UInt8> {
+        let i = Int(node)
+        let start = Int(nameOffset[i])
+        return nameBlob[start..<(start + Int(nameLength[i]))]
+    }
+
+    public func hasName(_ node: Int32, _ candidate: [UInt8]) -> Bool {
+        let i = Int(node)
+        guard Int(nameLength[i]) == candidate.count else { return false }
+        let start = Int(nameOffset[i])
+        for offset in 0..<candidate.count
+        where nameBlob[start + offset] != candidate[offset] { return false }
+        return true
+    }
+
+    /// Finds a descendant by following path components from `node`.
+    public func child(of node: Int32, named name: String) -> Int32? {
+        let bytes = Array(name.utf8)
+        return children(of: node).first { hasName($0, bytes) }
+    }
+
+    public func descendant(of node: Int32, at components: [String]) -> Int32? {
+        var current = node
+        for component in components {
+            guard let next = child(of: current, named: component) else { return nil }
+            current = next
+        }
+        return current
+    }
+
     public func children(of node: Int32) -> Range<Int32> {
         let start = childStart[Int(node)]
         return start..<(start + childCount[Int(node)])

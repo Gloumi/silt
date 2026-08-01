@@ -46,6 +46,8 @@ struct BrowserView: View {
                     SunburstView(model: model).padding(8)
                 case .list:
                     entryList(store: store, parentSize: parentSize)
+                case .cleanup:
+                    CleanupView(model: model)
                 }
                 StatusBar(model: model, store: store)
             }

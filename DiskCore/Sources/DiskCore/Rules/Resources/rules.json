@@ -1,0 +1,277 @@
+{
+  "categories": [
+    { "id": "dependencies", "title": "Dépendances régénérables", "symbol": "shippingbox" },
+    { "id": "build", "title": "Artefacts de compilation", "symbol": "hammer" },
+    { "id": "xcode", "title": "Xcode", "symbol": "wrench.and.screwdriver" },
+    { "id": "toolcache", "title": "Caches d'outils", "symbol": "arrow.triangle.2.circlepath" },
+    { "id": "appcache", "title": "Caches d'applications", "symbol": "app.badge" },
+    { "id": "containers", "title": "Conteneurs et machines virtuelles", "symbol": "cube.box" },
+    { "id": "models", "title": "Modèles téléchargés", "symbol": "brain" },
+    { "id": "system", "title": "Corbeille et journaux", "symbol": "trash" }
+  ],
+  "rules": [
+    {
+      "id": "node-modules",
+      "category": "dependencies",
+      "title": "Dépendances npm",
+      "safety": "safe",
+      "recovery": "npm install",
+      "match": { "directoryName": "node_modules" }
+    },
+    {
+      "id": "composer-vendor",
+      "category": "dependencies",
+      "title": "Dépendances Composer",
+      "safety": "safe",
+      "recovery": "composer install",
+      "match": { "directoryName": "vendor", "siblingFile": "composer.json" }
+    },
+    {
+      "id": "python-venv",
+      "category": "dependencies",
+      "title": "Environnement virtuel Python",
+      "safety": "safe",
+      "recovery": "python -m venv puis pip install -r requirements.txt",
+      "match": { "directoryName": ".venv", "childFile": "pyvenv.cfg" }
+    },
+    {
+      "id": "python-venv-plain",
+      "category": "dependencies",
+      "title": "Environnement virtuel Python",
+      "safety": "safe",
+      "recovery": "python -m venv puis pip install -r requirements.txt",
+      "match": { "directoryName": "venv", "childFile": "pyvenv.cfg" }
+    },
+    {
+      "id": "cocoapods",
+      "category": "dependencies",
+      "title": "Dépendances CocoaPods",
+      "safety": "safe",
+      "recovery": "pod install",
+      "match": { "directoryName": "Pods", "siblingFile": "Podfile" }
+    },
+    {
+      "id": "bundler-vendor",
+      "category": "dependencies",
+      "title": "Gems Bundler",
+      "safety": "safe",
+      "recovery": "bundle install",
+      "match": { "directoryName": "vendor", "siblingFile": "Gemfile" }
+    },
+
+    {
+      "id": "cargo-target",
+      "category": "build",
+      "title": "Cible de compilation Rust",
+      "safety": "safe",
+      "recovery": "cargo build",
+      "match": { "directoryName": "target", "siblingFile": "Cargo.toml" }
+    },
+    {
+      "id": "typo3-var-cache",
+      "category": "build",
+      "title": "Cache TYPO3",
+      "safety": "safe",
+      "recovery": "Régénéré automatiquement",
+      "match": { "directoryName": "typo3temp" }
+    },
+    {
+      "id": "next-build",
+      "category": "build",
+      "title": "Build Next.js",
+      "safety": "safe",
+      "recovery": "npm run build",
+      "match": { "directoryName": ".next", "siblingFile": "package.json" }
+    },
+    {
+      "id": "gradle-build",
+      "category": "build",
+      "title": "Build Gradle",
+      "safety": "safe",
+      "recovery": "./gradlew build",
+      "match": { "directoryName": ".gradle" }
+    },
+    {
+      "id": "terraform",
+      "category": "build",
+      "title": "Modules Terraform",
+      "safety": "safe",
+      "recovery": "terraform init",
+      "match": { "directoryName": ".terraform" }
+    },
+
+    {
+      "id": "xcode-derived-data",
+      "category": "xcode",
+      "title": "Données dérivées",
+      "safety": "safe",
+      "recovery": "Régénérées à la prochaine compilation",
+      "match": { "childrenOfHomePath": "Library/Developer/Xcode/DerivedData" }
+    },
+    {
+      "id": "xcode-device-support",
+      "category": "xcode",
+      "title": "Symboles d'appareils iOS",
+      "safety": "safe",
+      "recovery": "Re-téléchargés au prochain branchement de l'appareil",
+      "match": { "childrenOfHomePath": "Library/Developer/Xcode/iOS DeviceSupport" }
+    },
+    {
+      "id": "xcode-simulators",
+      "category": "xcode",
+      "title": "Simulateurs",
+      "safety": "caution",
+      "recovery": "Recréés depuis Xcode, mais leur contenu est perdu",
+      "match": { "childrenOfHomePath": "Library/Developer/CoreSimulator/Devices" }
+    },
+    {
+      "id": "xcode-archives",
+      "category": "xcode",
+      "title": "Archives d'applications",
+      "safety": "caution",
+      "recovery": "Irrécupérables — nécessaires pour re-symboliser d'anciens plantages",
+      "match": { "childrenOfHomePath": "Library/Developer/Xcode/Archives" }
+    },
+    {
+      "id": "swiftpm-cache",
+      "category": "xcode",
+      "title": "Cache Swift Package Manager",
+      "safety": "safe",
+      "recovery": "Re-téléchargé à la résolution suivante",
+      "match": { "homePath": "Library/Caches/org.swift.swiftpm" }
+    },
+
+    {
+      "id": "homebrew-cache",
+      "category": "toolcache",
+      "title": "Cache Homebrew",
+      "safety": "safe",
+      "recovery": "brew cleanup",
+      "match": { "homePath": "Library/Caches/Homebrew" }
+    },
+    {
+      "id": "npm-cache",
+      "category": "toolcache",
+      "title": "Cache npm",
+      "safety": "safe",
+      "recovery": "npm cache clean --force",
+      "match": { "homePath": ".npm" }
+    },
+    {
+      "id": "cargo-registry",
+      "category": "toolcache",
+      "title": "Registre Cargo",
+      "safety": "safe",
+      "recovery": "Re-téléchargé à la compilation suivante",
+      "match": { "homePath": ".cargo/registry" }
+    },
+    {
+      "id": "rustup-toolchains",
+      "category": "toolcache",
+      "title": "Chaînes d'outils Rust",
+      "safety": "caution",
+      "recovery": "rustup toolchain install",
+      "match": { "homePath": ".rustup/toolchains" }
+    },
+    {
+      "id": "go-modules",
+      "category": "toolcache",
+      "title": "Cache de modules Go",
+      "safety": "safe",
+      "recovery": "go mod download",
+      "match": { "homePath": "go/pkg/mod" }
+    },
+    {
+      "id": "gem-cache",
+      "category": "toolcache",
+      "title": "Gems installées",
+      "safety": "caution",
+      "recovery": "gem install",
+      "match": { "homePath": ".gem" }
+    },
+    {
+      "id": "generic-cache",
+      "category": "toolcache",
+      "title": "Cache utilisateur",
+      "safety": "safe",
+      "recovery": "Régénéré automatiquement",
+      "match": { "childrenOfHomePath": ".cache" }
+    },
+    {
+      "id": "puppeteer",
+      "category": "toolcache",
+      "title": "Navigateurs Puppeteer",
+      "safety": "safe",
+      "recovery": "Re-téléchargés à l'installation suivante",
+      "match": { "homePath": ".cache/puppeteer" }
+    },
+
+    {
+      "id": "app-caches",
+      "category": "appcache",
+      "title": "Cache d'application",
+      "safety": "safe",
+      "recovery": "Régénéré par l'application",
+      "match": { "childrenOfHomePath": "Library/Caches" }
+    },
+
+    {
+      "id": "docker-data",
+      "category": "containers",
+      "title": "Données Docker Desktop",
+      "safety": "caution",
+      "recovery": "Préférez « docker system prune » — supprimer ce dossier efface toutes les images et volumes",
+      "match": { "homePath": "Library/Containers/com.docker.docker/Data" }
+    },
+    {
+      "id": "docker-config",
+      "category": "containers",
+      "title": "Cache Docker CLI",
+      "safety": "safe",
+      "recovery": "Régénéré automatiquement",
+      "match": { "homePath": ".docker/cache" }
+    },
+    {
+      "id": "orbstack",
+      "category": "containers",
+      "title": "Données OrbStack",
+      "safety": "caution",
+      "recovery": "Machines et images recréées manuellement",
+      "match": { "homePath": ".orbstack" }
+    },
+
+    {
+      "id": "ollama-models",
+      "category": "models",
+      "title": "Modèles Ollama",
+      "safety": "caution",
+      "recovery": "ollama pull — re-téléchargement long selon les modèles",
+      "match": { "homePath": ".ollama/models" }
+    },
+    {
+      "id": "huggingface",
+      "category": "models",
+      "title": "Cache Hugging Face",
+      "safety": "caution",
+      "recovery": "Re-téléchargé à la demande",
+      "match": { "homePath": ".cache/huggingface" }
+    },
+
+    {
+      "id": "user-trash",
+      "category": "system",
+      "title": "Corbeille",
+      "safety": "caution",
+      "recovery": "Définitif — videz-la depuis le Finder",
+      "match": { "homePath": ".Trash" }
+    },
+    {
+      "id": "user-logs",
+      "category": "system",
+      "title": "Journaux d'applications",
+      "safety": "safe",
+      "recovery": "Régénérés automatiquement",
+      "match": { "childrenOfHomePath": "Library/Logs" }
+    }
+  ]
+}

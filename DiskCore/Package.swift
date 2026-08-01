@@ -11,6 +11,7 @@ let package = Package(
     targets: [
         .target(
             name: "DiskCore",
+            resources: [.process("Rules/Resources")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(

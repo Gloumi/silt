@@ -18,10 +18,22 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, list
+        case sunburst, list, cleanup
         var id: String { rawValue }
-        var label: String { self == .sunburst ? "Anneaux" : "Liste" }
-        var symbol: String { self == .sunburst ? "chart.pie" : "list.bullet" }
+        var label: String {
+            switch self {
+            case .sunburst: "Anneaux"
+            case .list: "Liste"
+            case .cleanup: "Nettoyage"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .sunburst: "chart.pie"
+            case .list: "list.bullet"
+            case .cleanup: "wand.and.sparkles"
+            }
+        }
     }
 
     /// Everything the confirmation sheet needs to describe a pending deletion.
@@ -58,6 +70,11 @@ final class ScanModel {
     /// computed: a directory can hold six figures of entries and re-sorting on
     /// every view update would be felt.
     private(set) var rows: [Int32] = []
+
+    /// Recoverable space found by the rule engine, recomputed when the tree
+    /// changes. Cheap enough (tens of milliseconds) to redo rather than patch.
+    private(set) var junkReport: JunkReport?
+    var junkSelection: Set<Int32> = []
 
     /// Set while the confirmation sheet is up.
     var deletionPlan: DeletionPlan? {
@@ -103,6 +120,8 @@ final class ScanModel {
         selection = []
         result = nil
         partialStore = nil
+        junkReport = nil
+        junkSelection = []
         lastDeletion = nil
         deletionMessage = nil
         scanID += 1
@@ -131,6 +150,7 @@ final class ScanModel {
                 result = scanned
                 partialStore = nil
                 phase = .loaded
+                refreshJunk()
                 // Deliberately not a new scanID: indices are append-only within
                 // a scan, so the final tree agrees with the last snapshot and
                 // the view settles into it rather than flashing.
@@ -268,7 +288,9 @@ final class ScanModel {
         lastDeletion = report.trashed.isEmpty ? nil : report
         deletionMessage = summary(of: report)
         selection = []
+        junkSelection = []
         refreshRows()
+        refreshJunk()
     }
 
     func undoLastDeletion() async {
@@ -291,9 +313,51 @@ final class ScanModel {
             ? "Restauration effectuée."
             : "\(failures.count) élément(s) n'ont pas pu être restaurés."
         refreshRows()
+        refreshJunk()
     }
 
     func dismissDeletionMessage() { deletionMessage = nil }
+
+    // MARK: - Cleanup
+
+    private func refreshJunk() {
+        guard let store else { junkReport = nil; return }
+        junkReport = JunkScanner.scan(store: store)
+        let live = Set(junkReport?.findings.map(\.node) ?? [])
+        junkSelection = junkSelection.intersection(live)
+    }
+
+    func toggleJunk(_ node: Int32) {
+        if junkSelection.contains(node) {
+            junkSelection.remove(node)
+        } else {
+            junkSelection.insert(node)
+        }
+    }
+
+    func selectJunk(_ nodes: [Int32]) {
+        // Toggling a whole category off again is the obvious second press.
+        if nodes.allSatisfy(junkSelection.contains) {
+            junkSelection.subtract(nodes)
+        } else {
+            junkSelection.formUnion(nodes)
+        }
+    }
+
+    /// Ticks everything the rules consider regenerable, and nothing that needs
+    /// a judgement call.
+    func selectSafeJunk() {
+        guard let report = junkReport else { return }
+        junkSelection = Set(
+            report.findings.filter { $0.safety == .safe }.map(\.node)
+        )
+    }
+
+    func requestJunkDeletion() {
+        guard !junkSelection.isEmpty else { return }
+        selection = junkSelection
+        requestDeletion()
+    }
 
     private func summary(of report: DeletionReport) -> String {
         var parts: [String] = []
