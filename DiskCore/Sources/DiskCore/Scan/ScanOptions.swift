@@ -87,6 +87,22 @@ public struct ScanResult: Sendable {
     public var duration: TimeInterval
     public var wasCancelled: Bool
 
+    public init(
+        store: NodeStore,
+        unreadablePaths: [String] = [],
+        filesSeen: Int = 0,
+        directoriesSeen: Int = 0,
+        duration: TimeInterval = 0,
+        wasCancelled: Bool = false
+    ) {
+        self.store = store
+        self.unreadablePaths = unreadablePaths
+        self.filesSeen = filesSeen
+        self.directoriesSeen = directoriesSeen
+        self.duration = duration
+        self.wasCancelled = wasCancelled
+    }
+
     public var rootTotalAlloc: Int64 { store.isEmpty ? 0 : store.totalAlloc[0] }
     public var rootTotalLogical: Int64 { store.isEmpty ? 0 : store.totalLogical[0] }
 }

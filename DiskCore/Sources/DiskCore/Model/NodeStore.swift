@@ -18,6 +18,9 @@ public struct NodeFlags: OptionSet, Sendable {
     /// Its own size is still accounted for.
     public static let notDescended = NodeFlags(rawValue: 1 << 7)
     public static let compressed = NodeFlags(rawValue: 1 << 8)
+    /// Moved to the Trash during this session. The node stays in the tree so
+    /// the deletion can be undone; views hide it and it contributes nothing.
+    public static let deleted = NodeFlags(rawValue: 1 << 9)
 }
 
 /// A whole scanned tree, stored as parallel arrays indexed by node id.
@@ -180,10 +183,69 @@ public struct NodeStore: Sendable {
     }
 
     /// Children sorted by descending size — the order every view wants.
+    /// Items deleted this session are dropped.
     public func childrenSortedBySize(
         of node: Int32, useLogical: Bool = false
     ) -> [Int32] {
         let sizes = useLogical ? totalLogical : totalAlloc
-        return children(of: node).sorted { sizes[Int($0)] > sizes[Int($1)] }
+        return children(of: node)
+            .filter { !flags[Int($0)].contains(.deleted) }
+            .sorted { sizes[Int($0)] > sizes[Int($1)] }
+    }
+
+    // MARK: - Deletion
+
+    /// Records that `node` is gone, crediting its bytes back to every ancestor.
+    ///
+    /// The node is kept rather than spliced out: indices are woven through the
+    /// parent and child arrays, and through geometry the views are animating,
+    /// so removing an entry would invalidate all of it. Marking is O(depth) and
+    /// lets the tree stay live under the user instead of forcing a rescan.
+    public mutating func markDeleted(_ node: Int32) {
+        let index = Int(node)
+        guard node > 0, !flags[index].contains(.deleted) else { return }
+        applyDelta(
+            from: node,
+            alloc: -totalAlloc[index],
+            logical: -totalLogical[index],
+            files: -fileCount[index]
+        )
+        flags[index].insert(.deleted)
+    }
+
+    /// Reverses `markDeleted` after the item has been put back on disk.
+    public mutating func unmarkDeleted(
+        _ node: Int32, alloc: Int64, logical: Int64, files: Int32
+    ) {
+        let index = Int(node)
+        guard flags[index].contains(.deleted) else { return }
+        flags[index].remove(.deleted)
+        totalAlloc[index] = alloc
+        totalLogical[index] = logical
+        fileCount[index] = files
+        applyDelta(from: node, alloc: alloc, logical: logical, files: files)
+    }
+
+    /// Adds a delta to every ancestor of `node`, stopping at the root, which is
+    /// its own parent.
+    private mutating func applyDelta(
+        from node: Int32, alloc: Int64, logical: Int64, files: Int32
+    ) {
+        if alloc < 0 {
+            let index = Int(node)
+            totalAlloc[index] = 0
+            totalLogical[index] = 0
+            fileCount[index] = 0
+        }
+        var current = parent[Int(node)]
+        while true {
+            let index = Int(current)
+            totalAlloc[index] += alloc
+            totalLogical[index] += logical
+            fileCount[index] += files
+            let next = parent[index]
+            if next == current { break }
+            current = next
+        }
     }
 }

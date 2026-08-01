@@ -6,7 +6,6 @@ import SwiftUI
 /// this stays as the precise, keyboard-friendly counterpart.
 struct BrowserView: View {
     let model: ScanModel
-    @State private var selection: Int32?
 
     var body: some View {
         Group {
@@ -56,7 +55,7 @@ struct BrowserView: View {
     @ViewBuilder
     private func entryList(store: NodeStore, parentSize: Int64) -> some View {
         ZStack {
-            List(model.rows, id: \.self, selection: $selection) { node in
+            List(model.rows, id: \.self, selection: Bindable(model).selection) { node in
                     EntryRow(
                         store: store,
                         node: node,
@@ -68,6 +67,13 @@ struct BrowserView: View {
                     .onTapGesture(count: 2) { model.enter(node) }
                     .contextMenu {
                         Button("Afficher dans le Finder") { reveal(store, node) }
+                        Divider()
+                        Button("Mettre à la corbeille", role: .destructive) {
+                            if !model.selection.contains(node) {
+                                model.selection = [node]
+                            }
+                            model.requestDeletion()
+                        }
                     }
                 }
             .listStyle(.inset)

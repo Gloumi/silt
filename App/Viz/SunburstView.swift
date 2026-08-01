@@ -41,9 +41,20 @@ struct SunburstView: View {
                         hovered = nil
                     }
                 }
+                // Single click selects (feeding the inspector), double click
+                // drills in. Without the first, the rings would be the only
+                // view from which nothing can be inspected or deleted.
+                .gesture(
+                    SpatialTapGesture(count: 2)
+                        .onEnded { event in
+                            handleTap(at: event.location, metrics: metrics, drill: true)
+                        }
+                )
                 .gesture(
                     SpatialTapGesture()
-                        .onEnded { event in handleTap(at: event.location, metrics: metrics) }
+                        .onEnded { event in
+                            handleTap(at: event.location, metrics: metrics, drill: false)
+                        }
                 )
 
                 CenterLabel(model: model, hovered: hovered)
@@ -155,15 +166,16 @@ struct SunburstView: View {
             let isHovered = hovered.map {
                 $0.node == arc.node && $0.ring == arc.ring
             } ?? false
+            let isSelected = arc.node.map { model.selection.contains($0) } ?? false
 
-            let outerColor = isHovered
+            let outerColor = (isHovered || isSelected)
                 ? Palette.highlighted(
                     slot: arc.slot, ring: arc.ring,
                     sibling: arc.siblingIndex, dark: isDark)
                 : Palette.color(
                     slot: arc.slot, ring: arc.ring,
                     sibling: arc.siblingIndex, dark: isDark)
-            let innerColor = isHovered
+            let innerColor = (isHovered || isSelected)
                 ? outerColor
                 : Palette.deepened(
                     slot: arc.slot, ring: arc.ring,
@@ -184,6 +196,14 @@ struct SunburstView: View {
                     endRadius: metrics.outerRadius
                 )
             )
+
+            if isSelected {
+                context.stroke(
+                    path,
+                    with: .color(isDark ? .white : .black),
+                    lineWidth: 1.5
+                )
+            }
         }
 
         drawLabels(context: context, metrics: metrics, ringFraction: ringFraction)
@@ -257,7 +277,7 @@ struct SunburstView: View {
 
     // MARK: - Interaction
 
-    private func handleTap(at location: CGPoint, metrics: Metrics) {
+    private func handleTap(at location: CGPoint, metrics: Metrics, drill: Bool) {
         let relative = metrics.relative(location)
         let distance = (relative.x * relative.x + relative.y * relative.y).squareRoot()
         if distance <= metrics.innerRadius {
@@ -267,8 +287,15 @@ struct SunburstView: View {
         guard let arc = SunburstLayout.hitTest(
             arcs: arcs, point: relative,
             innerRadius: metrics.innerRadius, ringWidth: metrics.ringWidth
-        ), let node = arc.node else { return }
-        model.enter(node)
+        ), let node = arc.node else {
+            model.selection = []
+            return
+        }
+        if drill {
+            model.enter(node)
+        } else {
+            model.selection = [node]
+        }
     }
 
     private func tooltipText(for arc: Arc) -> [String]? {
