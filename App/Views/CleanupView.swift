@@ -154,15 +154,17 @@ private struct FindingRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(finding.title)
+                    Text(headline)
                         .fontWeight(.medium)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     if finding.safety == .caution {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }
                 }
-                Text(shortPath)
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -174,6 +176,7 @@ private struct FindingRow: View {
                         .lineLimit(1)
                 }
             }
+            .help(shortPath)
 
             Spacer(minLength: 10)
 
@@ -184,6 +187,21 @@ private struct FindingRow: View {
         .padding(.vertical, 3)
         .contentShape(.rect)
         .onTapGesture(perform: toggle)
+    }
+
+    private var folderName: String {
+        (finding.path as NSString).lastPathComponent
+    }
+
+    /// Prefer naming the thing itself — "Spotify", "iPhone 17 Pro" — and demote
+    /// the rule to the subtitle. Which cache it is matters less than whose.
+    private var headline: String {
+        AppNames.shared.friendlyName(for: folderName, path: finding.path)
+            ?? finding.title
+    }
+
+    private var subtitle: String {
+        headline == finding.title ? shortPath : "\(finding.title) · \(shortPath)"
     }
 
     private var shortPath: String {

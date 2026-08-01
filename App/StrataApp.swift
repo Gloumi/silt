@@ -99,7 +99,9 @@ struct ContentView: View {
                     set: { model.presentation = $0 }
                 )) {
                     ForEach(ScanModel.Presentation.allCases) { mode in
-                        Label(mode.label, systemImage: mode.symbol).tag(mode)
+                        Label(mode.label, systemImage: mode.symbol)
+                            .help(mode.hint)
+                            .tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)

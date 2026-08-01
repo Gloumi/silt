@@ -117,6 +117,14 @@ private struct EntryRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
+            // A folder named after a bundle id says nothing on its own; the
+            // application it belongs to is the useful part.
+            if let friendly = friendlyName {
+                Text(friendly)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
             if let badge = badgeText(flags) {
                 Text(badge)
                     .font(.caption2)
@@ -153,6 +161,12 @@ private struct EntryRow: View {
                     .frame(width: geometry.size.width * min(1, max(0, fraction)))
             }
         }
+    }
+
+    private var friendlyName: String? {
+        AppNames.shared.friendlyName(
+            for: store.name(of: node), path: store.path(of: node)
+        )
     }
 
     private func badgeText(_ flags: NodeFlags) -> String? {

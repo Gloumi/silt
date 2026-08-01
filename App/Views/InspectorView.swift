@@ -85,6 +85,13 @@ private struct Details: View {
                     .font(.headline)
                     .lineLimit(3)
                     .textSelection(.enabled)
+                if let friendly = AppNames.shared.friendlyName(
+                    for: store.name(of: node), path: path
+                ) {
+                    Text(friendly)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 Text(store.isDirectory(node) ? "Dossier" : "Fichier")
                     .font(.caption)
                     .foregroundStyle(.secondary)

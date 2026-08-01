@@ -34,6 +34,15 @@ final class ScanModel {
             case .cleanup: "wand.and.sparkles"
             }
         }
+
+        /// Shown on hover: the icons alone do not say what each view is for.
+        var hint: String {
+            switch self {
+            case .sunburst: "Anneaux — vue d'ensemble du dossier"
+            case .list: "Liste — éléments triés par taille"
+            case .cleanup: "Nettoyage — caches et fichiers récupérables"
+            }
+        }
     }
 
     /// Everything the confirmation sheet needs to describe a pending deletion.
