@@ -54,6 +54,7 @@ public enum JunkScanner {
                 for child in store.children(of: node)
                 where !claimed.contains(child) {
                     append(store: store, node: child, rule: rule,
+                           subjectIsFolderName: true,
                            findings: &findings, claimed: &claimed)
                 }
             } else if !claimed.contains(node) {
@@ -158,6 +159,7 @@ public enum JunkScanner {
         store: NodeStore,
         node: Int32,
         rule: JunkRule,
+        subjectIsFolderName: Bool = false,
         findings: inout [JunkFinding],
         claimed: inout Set<Int32>
     ) {
@@ -176,7 +178,8 @@ public enum JunkScanner {
             recovery: rule.recovery,
             path: store.path(of: node),
             bytes: store.totalAlloc[index],
-            fileCount: store.fileCount[index]
+            fileCount: store.fileCount[index],
+            subject: subjectIsFolderName ? store.name(of: node) : nil
         ))
     }
 }

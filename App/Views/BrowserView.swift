@@ -186,6 +186,19 @@ private struct BreadcrumbBar: View {
     let store: NodeStore
 
     var body: some View {
+        HStack(spacing: 10) {
+            breadcrumbs
+            Spacer(minLength: 8)
+            ViewModeSwitcher(model: model)
+                .padding(.trailing, 12)
+        }
+        .background(.bar)
+        // The switcher's tooltip hangs below this bar and must draw over the
+        // content beneath it.
+        .zIndex(1)
+    }
+
+    private var breadcrumbs: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 4) {
                 ForEach(Array(model.trail.enumerated()), id: \.offset) { depth, node in
@@ -205,11 +218,10 @@ private struct BreadcrumbBar: View {
                     .disabled(depth == model.trail.count - 1)
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.leading, 12)
             .padding(.vertical, 7)
         }
         .scrollIndicators(.never)
-        .background(.bar)
     }
 }
 

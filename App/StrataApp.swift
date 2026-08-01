@@ -94,19 +94,6 @@ struct ContentView: View {
                 .keyboardShortcut("i", modifiers: [.command, .option])
             }
             ToolbarItem {
-                Picker("Vue", selection: Binding(
-                    get: { model.presentation },
-                    set: { model.presentation = $0 }
-                )) {
-                    ForEach(ScanModel.Presentation.allCases) { mode in
-                        Label(mode.label, systemImage: mode.symbol)
-                            .help(mode.hint)
-                            .tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-            ToolbarItem {
                 Picker("Taille", selection: Binding(
                     get: { model.useLogicalSize },
                     set: { model.useLogicalSize = $0 }

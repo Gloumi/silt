@@ -195,9 +195,16 @@ private struct FindingRow: View {
 
     /// Prefer naming the thing itself — "Spotify", "iPhone 17 Pro" — and demote
     /// the rule to the subtitle. Which cache it is matters less than whose.
+    ///
+    /// Nothing here is guessed. Either the system resolves a bundle identifier
+    /// to an installed app, or the folder's own name is shown verbatim: a cache
+    /// directory called `Firefox` is already telling us what it is, and the
+    /// generic rule title was simply hiding it.
     private var headline: String {
-        AppNames.shared.friendlyName(for: folderName, path: finding.path)
-            ?? finding.title
+        if let resolved = AppNames.shared.friendlyName(
+            for: folderName, path: finding.path
+        ) { return resolved }
+        return finding.subject ?? finding.title
     }
 
     private var subtitle: String {

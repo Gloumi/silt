@@ -73,6 +73,11 @@ public struct JunkFinding: Sendable, Identifiable {
     public var path: String
     public var bytes: Int64
     public var fileCount: Int32
+    /// Set when the rule matches *children* of a directory, so the folder's own
+    /// name is what identifies this finding — `Firefox`, `SiriTTS`, a project
+    /// name under DerivedData. For rules that name one specific thing
+    /// (`~/.cargo/registry`), the rule title is the better label and this is nil.
+    public var subject: String?
 
     public var id: Int32 { node }
 }
