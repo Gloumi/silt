@@ -45,6 +45,20 @@ public struct ScanProgress: Sendable {
     public var bytesSeen: Int64 = 0
     public var currentPath: String = ""
     public var isFinished: Bool = false
+
+    public init(
+        filesSeen: Int = 0,
+        directoriesSeen: Int = 0,
+        bytesSeen: Int64 = 0,
+        currentPath: String = "",
+        isFinished: Bool = false
+    ) {
+        self.filesSeen = filesSeen
+        self.directoriesSeen = directoriesSeen
+        self.bytesSeen = bytesSeen
+        self.currentPath = currentPath
+        self.isFinished = isFinished
+    }
 }
 
 public struct ScanResult: Sendable {
