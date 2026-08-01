@@ -124,6 +124,23 @@ extension String {
 print("\(formatBytes(sizes[0]))  \(store.name(of: 0))")
 if !arguments.quiet { printTree(0, depth: 1, prefix: "") }
 
+// Layout cost, measured separately from the scan: the UI rebuilds this every
+// time you drill into a folder, so it has to stay in the low milliseconds.
+do {
+    var samples: [Double] = []
+    var arcCount = 0
+    for _ in 0..<5 {
+        let t0 = Date()
+        let arcs = SunburstLayout.build(
+            store: store, root: 0, useLogicalSize: arguments.logical
+        )
+        samples.append(Date().timeIntervalSince(t0) * 1000)
+        arcCount = arcs.count
+    }
+    let best = samples.min() ?? 0
+    print(String(format: "sunburst layout: %d arcs, %.1f ms (best of 5)", arcCount, best))
+}
+
 let elapsed = Date().timeIntervalSince(startedAt)
 let rate = elapsed > 0 ? Double(result.filesSeen) / elapsed : 0
 print("""

@@ -1,27 +1,26 @@
-import DiskCore
 import Foundation
 
 /// One drawn slice.
-struct Arc: Identifiable {
+public struct Arc: Identifiable {
     /// Node it represents, or `nil` for an aggregated "others" slice.
-    var node: Int32?
-    var ring: Int
-    var startAngle: Double
-    var endAngle: Double
+    public var node: Int32?
+    public var ring: Int
+    public var startAngle: Double
+    public var endAngle: Double
     /// Index into the categorical palette, inherited from the ring-1 ancestor.
     /// `-1` means the neutral "others" colour.
-    var slot: Int
-    var size: Int64
+    public var slot: Int
+    public var size: Int64
     /// How many siblings an "others" slice stands for.
-    var mergedCount: Int
+    public var mergedCount: Int
     /// Rank among its siblings, used to nudge lightness so that neighbours in
     /// the same branch stay distinguishable without inventing a new hue.
-    var siblingIndex: Int
+    public var siblingIndex: Int
 
-    var id: Int { (ring << 24) ^ Int(node ?? -1) ^ Int(startAngle * 1000) }
-    var sweep: Double { endAngle - startAngle }
-    var midAngle: Double { (startAngle + endAngle) / 2 }
-    var isOthers: Bool { node == nil }
+    public var id: Int { (ring << 24) ^ Int(node ?? -1) ^ Int(startAngle * 1000) }
+    public var sweep: Double { endAngle - startAngle }
+    public var midAngle: Double { (startAngle + endAngle) / 2 }
+    public var isOthers: Bool { node == nil }
 }
 
 /// Turns a subtree into a flat list of slices ready to draw.
@@ -31,12 +30,13 @@ struct Arc: Identifiable {
 /// degree a slice is a hairline nobody can click, and drawing tens of thousands
 /// of them costs frames while telling the reader nothing. And the ring depth is
 /// capped, because past five rings the arcs are too thin to carry a label.
-enum SunburstLayout {
+public enum SunburstLayout {
 
-    static func build(
+    public static func build(
         store: NodeStore,
         root: Int32,
-        maxRings: Int = 5,
+        maxRings: Int = 4,
+        slotCount: Int = 8,
         useLogicalSize: Bool,
         minimumSweep: Double = 0.006 // ≈ 0.34°
     ) -> [Arc] {
@@ -53,6 +53,7 @@ enum SunburstLayout {
             parentSize: total,
             slot: nil,
             maxRings: maxRings,
+            slotCount: slotCount,
             useLogicalSize: useLogicalSize,
             minimumSweep: minimumSweep,
             into: &arcs
@@ -75,6 +76,7 @@ enum SunburstLayout {
         parentSize: Int64,
         slot: Int?,
         maxRings: Int,
+        slotCount: Int,
         useLogicalSize: Bool,
         minimumSweep: Double,
         into arcs: inout [Arc]
@@ -97,8 +99,8 @@ enum SunburstLayout {
 
             // Past the eighth sibling there is no ninth hue by design, and
             // hairline slices are unusable — both fold into "others".
-            let childSlot = slot ?? (index < Palette.slotCount ? index : -1)
-            if sweep < minimumSweep || (ring == 1 && index >= Palette.slotCount) {
+            let childSlot = slot ?? (index < slotCount ? index : -1)
+            if sweep < minimumSweep || (ring == 1 && index >= slotCount) {
                 mergedSize += childSize
                 mergedCount += 1
                 continue
@@ -120,7 +122,8 @@ enum SunburstLayout {
                     store: store, parent: child, ring: ring + 1,
                     startAngle: angle, availableSweep: sweep,
                     parentSize: childSize, slot: childSlot,
-                    maxRings: maxRings, useLogicalSize: useLogicalSize,
+                    maxRings: maxRings, slotCount: slotCount,
+                    useLogicalSize: useLogicalSize,
                     minimumSweep: minimumSweep, into: &arcs
                 )
             }
@@ -149,7 +152,7 @@ enum SunburstLayout {
     /// Polar lookup: the radius picks the ring, then a scan within that ring
     /// picks the slice. Rings hold few enough arcs after merging that this stays
     /// comfortably interactive.
-    static func hitTest(
+    public static func hitTest(
         arcs: [Arc], point: CGPoint, innerRadius: Double, ringWidth: Double
     ) -> Arc? {
         let distance = (point.x * point.x + point.y * point.y).squareRoot()

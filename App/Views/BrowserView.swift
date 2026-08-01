@@ -14,7 +14,15 @@ struct BrowserView: View {
             case .idle:
                 EmptyStateView()
             case .scanning(let progress):
-                ScanningView(progress: progress) { model.cancel() }
+                if model.store != nil {
+                    // The tree is already worth looking at — show it growing,
+                    // with the counters demoted to a strip.
+                    loadedContent.overlay(alignment: .top) {
+                        ScanStrip(progress: progress) { model.cancel() }
+                    }
+                } else {
+                    ScanningView(progress: progress) { model.cancel() }
+                }
             case .failed(let message):
                 ContentUnavailableView(
                     "Scan impossible", systemImage: "exclamationmark.triangle",
@@ -222,6 +230,34 @@ private struct EmptyStateView: View {
         } description: {
             Text("Choisissez un volume ou un emplacement dans la barre latérale.")
         }
+    }
+}
+
+/// Slim live counter shown over the growing tree.
+private struct ScanStrip: View {
+    let progress: ScanProgress
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            ProgressView().controlSize(.small)
+            Text("\(Format.count(progress.filesSeen)) fichiers")
+                .monospacedDigit()
+                .contentTransition(.numericText())
+            Text(Format.bytes(progress.bytesSeen))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Button("Annuler", action: onCancel)
+                .controlSize(.small)
+                .keyboardShortcut(.escape, modifiers: [])
+        }
+        .font(.caption)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: .capsule)
+        .shadow(radius: 6, y: 2)
+        .padding(.top, 10)
+        .animation(.default, value: progress.filesSeen)
     }
 }
 

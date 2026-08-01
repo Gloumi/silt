@@ -84,10 +84,15 @@ public enum ScanEngine {
     ///
     /// Honours task cancellation: the result is still returned, with
     /// `wasCancelled` set and partial totals.
+    /// - Parameter snapshot: called periodically with a rolled-up copy of the
+    ///   tree built so far, so a UI can draw the result taking shape instead of
+    ///   a spinner. Node indices are append-only within one scan, so successive
+    ///   snapshots agree about which index means which file.
     public static func scan(
         root: String,
         options: ScanOptions = ScanOptions(),
-        progress: (@Sendable (ScanProgress) -> Void)? = nil
+        progress: (@Sendable (ScanProgress) -> Void)? = nil,
+        snapshot: (@Sendable (NodeStore) -> Void)? = nil
     ) async -> ScanResult {
         let started = Date()
 
@@ -127,23 +132,34 @@ public enum ScanEngine {
 
         // Progress is polled rather than pushed: a callback per file would cost
         // more than the scan itself, and the UI only needs ~10 Hz.
-        let reporter = progress.map { callback in
-            Task {
-                while !Task.isCancelled {
-                    let snapshot = state.mutex.withLock { inner in
-                        ScanProgress(
-                            filesSeen: inner.filesSeen,
-                            directoriesSeen: inner.directoriesSeen,
-                            bytesSeen: inner.bytesSeen,
-                            currentPath: inner.currentPath,
-                            isFinished: false
-                        )
-                    }
-                    callback(snapshot)
-                    try? await Task.sleep(for: .milliseconds(100))
+        let reporter = (progress != nil || snapshot != nil) ? Task {
+            var tick = 0
+            while !Task.isCancelled {
+                let (counts, partial) = state.mutex.withLock { inner -> (ScanProgress, NodeStore?) in
+                    let counts = ScanProgress(
+                        filesSeen: inner.filesSeen,
+                        directoriesSeen: inner.directoriesSeen,
+                        bytesSeen: inner.bytesSeen,
+                        currentPath: inner.currentPath,
+                        isFinished: false
+                    )
+                    // Copying the store is a few tens of megabytes, so it runs
+                    // at a quarter of the progress rate — often enough to look
+                    // live, rare enough not to tax the workers.
+                    let wantsTree = snapshot != nil && tick % 4 == 0
+                    return (counts, wantsTree ? inner.store : nil)
                 }
+                progress?(counts)
+                if var partial, !partial.isEmpty {
+                    // Rolled up outside the lock: it is a linear pass over a
+                    // private copy, so the workers keep running meanwhile.
+                    partial.rollUp()
+                    snapshot?(partial)
+                }
+                tick += 1
+                try? await Task.sleep(for: .milliseconds(100))
             }
-        }
+        } : nil
 
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<options.workerCount {

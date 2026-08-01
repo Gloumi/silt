@@ -51,9 +51,14 @@ final class ScanModel {
 
     var currentNode: Int32 { trail.last ?? 0 }
 
+    /// Tree built so far, refreshed a few times a second while scanning.
+    private(set) var partialStore: NodeStore?
+
+    /// Whatever tree we can show right now — the finished one, or the partial
+    /// one still being built.
     var store: NodeStore? {
         if case .loaded(let result) = phase { return result.store }
-        return nil
+        return partialStore
     }
 
     var result: ScanResult? {
@@ -72,6 +77,8 @@ final class ScanModel {
         scanTask?.cancel()
         trail = [0]
         rows = []
+        partialStore = nil
+        scanID += 1
         phase = .scanning(ScanProgress())
 
         // Built outside the scan task so the engine's callback holds its own
@@ -80,18 +87,25 @@ final class ScanModel {
         let onProgress: @Sendable (ScanProgress) -> Void = { [weak self] progress in
             Task { @MainActor in self?.apply(progress) }
         }
+        let onSnapshot: @Sendable (NodeStore) -> Void = { [weak self] tree in
+            Task { @MainActor in self?.apply(partial: tree) }
+        }
 
         // Task inherits this main-actor context, so the completion below is
         // already on the main actor; only the engine's own work is off it.
         scanTask = Task { [weak self] in
-            let result = await ScanEngine.scan(root: path, progress: onProgress)
+            let result = await ScanEngine.scan(
+                root: path, progress: onProgress, snapshot: onSnapshot
+            )
             guard let self, !Task.isCancelled else { return }
             if result.store.isEmpty {
                 phase = .failed("Impossible de lire « \(path) ».")
             } else {
                 phase = .loaded(result)
-                trail = [0]
-                scanID += 1
+                partialStore = nil
+                // Deliberately not a new scanID: indices are append-only within
+                // a scan, so the final tree agrees with the last snapshot and
+                // the view can settle into it rather than flashing.
                 refreshRows()
             }
         }
@@ -100,6 +114,12 @@ final class ScanModel {
     private func apply(_ progress: ScanProgress) {
         guard isScanning, !progress.isFinished else { return }
         phase = .scanning(progress)
+    }
+
+    private func apply(partial tree: NodeStore) {
+        guard isScanning else { return }
+        partialStore = tree
+        refreshRows()
     }
 
     func cancel() {

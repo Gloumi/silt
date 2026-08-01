@@ -127,8 +127,16 @@ enum Palette {
     /// exactly what the palette checks caught.
     private static func siblingOffset(_ index: Int, ring: Int) -> Double {
         guard ring > 1 else { return 0 }
-        return [0.0, 0.038, 0.019][index % 3]
+        return [0.0, 0.045, 0.022][index % 3]
     }
+
+    /// How much the outer rings drift from their base hue.
+    ///
+    /// Kept small on purpose. Fading hard toward white with depth is the usual
+    /// way sunbursts end up looking washed out; here the outer rings stay
+    /// recognisably the same colour as the branch they belong to.
+    private static let lightnessPerRing = 0.038
+    private static let chromaLossPerRing = 0.05
 
     /// Colour for a slice in `slot`'s branch at `ring` rings from the centre.
     ///
@@ -159,9 +167,10 @@ enum Palette {
         let step = Double(max(0, ring - 1))
         return base
             .withLightness(
-                min(0.93, base.L + step * 0.052 + siblingOffset(sibling, ring: ring) + boost)
+                min(0.93, base.L + step * lightnessPerRing
+                    + siblingOffset(sibling, ring: ring) + boost)
             )
-            .withChroma(scale: max(0.45, 1 - step * 0.11))
+            .withChroma(scale: max(0.8, 1 - step * chromaLossPerRing))
             .color
     }
 
@@ -178,9 +187,10 @@ enum Palette {
         let step = Double(max(0, ring - 1))
         return base
             .withLightness(
-                max(0.2, base.L + step * 0.052 + siblingOffset(sibling, ring: ring) - 0.055)
+                max(0.2, base.L + step * lightnessPerRing
+                    + siblingOffset(sibling, ring: ring) - 0.085)
             )
-            .withChroma(scale: max(0.45, 1 - step * 0.11))
+            .withChroma(scale: max(0.8, 1 - step * chromaLossPerRing))
             .color
     }
 }

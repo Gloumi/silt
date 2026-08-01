@@ -4,7 +4,7 @@ import SwiftUI
 struct SunburstView: View {
     let model: ScanModel
 
-    static let maxRings = 5
+    static let maxRings = 4
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var arcs: [Arc] = []
@@ -66,6 +66,8 @@ struct SunburstView: View {
         .onChange(of: model.scanID, initial: true) { rebuild(animated: false) }
         .onChange(of: model.currentNode) { rebuild(animated: true) }
         .onChange(of: model.useLogicalSize) { rebuild(animated: false) }
+        // Redraw as the scan fills the tree in.
+        .onChange(of: model.rows.count) { rebuild(animated: false) }
     }
 
     // MARK: - Layout lifecycle
@@ -147,7 +149,7 @@ struct SunburstView: View {
                 outerRadius: outer - 1.5,
                 startAngle: shape.startAngle,
                 endAngle: shape.endAngle,
-                gapRadians: min(0.012, shape.sweep * 0.08)
+                gapRadians: min(0.010, shape.sweep * 0.07)
             ) else { continue }
 
             let isHovered = hovered.map {
@@ -293,8 +295,8 @@ struct SunburstView: View {
 
         init(size: CGSize) {
             center = CGPoint(x: size.width / 2, y: size.height / 2)
-            outerRadius = max(40, min(size.width, size.height) / 2 - 16)
-            innerRadius = outerRadius * 0.26
+            outerRadius = max(40, min(size.width, size.height) / 2 - 14)
+            innerRadius = outerRadius * 0.23
         }
 
         var ringWidth: Double {
