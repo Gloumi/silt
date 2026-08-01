@@ -370,22 +370,3 @@ private struct CenterLabel: View {
     }
 }
 
-private struct Tooltip: View {
-    let lines: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                Text(line)
-                    .font(.system(size: index == 0 ? 11 : 10,
-                                  weight: index == 0 ? .semibold : .regular))
-                    .foregroundStyle(index == 0 ? .primary : .secondary)
-            }
-        }
-        .lineLimit(1)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(.regularMaterial, in: .rect(cornerRadius: 6))
-        .shadow(radius: 5, y: 2)
-    }
-}

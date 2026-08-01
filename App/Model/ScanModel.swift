@@ -18,11 +18,12 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, list, cleanup
+        case sunburst, treemap, list, cleanup
         var id: String { rawValue }
         var label: String {
             switch self {
             case .sunburst: "Anneaux"
+            case .treemap: "Blocs"
             case .list: "Liste"
             case .cleanup: "Nettoyage"
             }
@@ -30,6 +31,7 @@ final class ScanModel {
         var symbol: String {
             switch self {
             case .sunburst: "chart.pie"
+            case .treemap: "square.grid.2x2"
             case .list: "list.bullet"
             case .cleanup: "wand.and.sparkles"
             }
@@ -39,6 +41,7 @@ final class ScanModel {
         var hint: String {
             switch self {
             case .sunburst: "Anneaux — vue d'ensemble du dossier"
+            case .treemap: "Blocs — surface proportionnelle à la taille"
             case .list: "Liste — éléments triés par taille"
             case .cleanup: "Nettoyage — caches et fichiers récupérables"
             }

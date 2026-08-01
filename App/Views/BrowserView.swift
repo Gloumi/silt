@@ -44,6 +44,8 @@ struct BrowserView: View {
                 switch model.presentation {
                 case .sunburst:
                     SunburstView(model: model).padding(8)
+                case .treemap:
+                    TreemapView(model: model).padding(6)
                 case .list:
                     entryList(store: store, parentSize: parentSize)
                 case .cleanup:
