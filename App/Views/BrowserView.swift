@@ -34,7 +34,21 @@ struct BrowserView: View {
             VStack(spacing: 0) {
                 BreadcrumbBar(model: model, store: store)
                 Divider()
-                List(model.rows, id: \.self, selection: $selection) { node in
+                switch model.presentation {
+                case .sunburst:
+                    SunburstView(model: model).padding(8)
+                case .list:
+                    entryList(store: store, parentSize: parentSize)
+                }
+                StatusBar(model: model, store: store)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func entryList(store: NodeStore, parentSize: Int64) -> some View {
+        ZStack {
+            List(model.rows, id: \.self, selection: $selection) { node in
                     EntryRow(
                         store: store,
                         node: node,
@@ -48,13 +62,9 @@ struct BrowserView: View {
                         Button("Afficher dans le Finder") { reveal(store, node) }
                     }
                 }
-                .listStyle(.inset)
-                if model.rows.isEmpty {
-                    ContentUnavailableView(
-                        "Dossier vide", systemImage: "folder"
-                    )
-                }
-                StatusBar(model: model, store: store)
+            .listStyle(.inset)
+            if model.rows.isEmpty {
+                ContentUnavailableView("Dossier vide", systemImage: "folder")
             }
         }
     }

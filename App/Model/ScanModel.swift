@@ -17,6 +17,15 @@ final class ScanModel {
         case failed(String)
     }
 
+    enum Presentation: String, CaseIterable, Identifiable {
+        case sunburst, list
+        var id: String { rawValue }
+        var label: String { self == .sunburst ? "Anneaux" : "Liste" }
+        var symbol: String { self == .sunburst ? "chart.pie" : "list.bullet" }
+    }
+
+    var presentation: Presentation = .sunburst
+
     private(set) var phase: Phase = .idle
 
     /// Path from the scan root down to the directory on screen. Always starts

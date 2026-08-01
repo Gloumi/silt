@@ -61,6 +61,17 @@ struct ContentView: View {
                 .disabled(model.trail.count <= 1)
             }
             ToolbarItem {
+                Picker("Vue", selection: Binding(
+                    get: { model.presentation },
+                    set: { model.presentation = $0 }
+                )) {
+                    ForEach(ScanModel.Presentation.allCases) { mode in
+                        Label(mode.label, systemImage: mode.symbol).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            ToolbarItem {
                 Picker("Taille", selection: Binding(
                     get: { model.useLogicalSize },
                     set: { model.useLogicalSize = $0 }
