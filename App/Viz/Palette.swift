@@ -114,30 +114,73 @@ enum Palette {
         return OKLab(hex: hexes[slot % hexes.count])
     }
 
+    /// Lightness offset that separates neighbouring siblings.
+    ///
+    /// From the second ring outward every child of a branch inherits the same
+    /// hue, so without this a large folder reads as one flat wedge and the gaps
+    /// have to do all the work. A three-step cycle guarantees adjacent siblings
+    /// differ, while staying far too small to be mistaken for a category change.
+    ///
+    /// It deliberately does **not** apply to the first ring: there each child
+    /// already carries its own hue, so the nudge would buy nothing — and it
+    /// would push the eighth slot out of the validated lightness band, which is
+    /// exactly what the palette checks caught.
+    private static func siblingOffset(_ index: Int, ring: Int) -> Double {
+        guard ring > 1 else { return 0 }
+        return [0.0, 0.038, 0.019][index % 3]
+    }
+
     /// Colour for a slice in `slot`'s branch at `ring` rings from the centre.
     ///
     /// Ring 1 is the base hue. Deeper rings step lighter and slightly less
     /// saturated — away from the surface in both light and dark mode, so the
     /// outer rings never sink into the background.
-    static func color(slot: Int, ring: Int, dark: Bool) -> Color {
-        guard slot >= 0 else { return otherColor(dark: dark) }
+    static func color(
+        slot: Int, ring: Int, sibling: Int = 0, dark: Bool
+    ) -> Color {
+        shade(slot: slot, ring: ring, sibling: sibling, dark: dark, boost: 0)
+    }
+
+    /// Hover highlight: same hue, pushed toward the light end.
+    static func highlighted(
+        slot: Int, ring: Int, sibling: Int = 0, dark: Bool
+    ) -> Color {
+        shade(slot: slot, ring: ring, sibling: sibling, dark: dark, boost: 0.11)
+    }
+
+    private static func shade(
+        slot: Int, ring: Int, sibling: Int, dark: Bool, boost: Double
+    ) -> Color {
+        guard slot >= 0 else {
+            let grey = dark ? 0.42 : 0.66
+            return Color(white: grey + siblingOffset(sibling, ring: ring) + boost)
+        }
         let base = base(slot: slot, dark: dark)
         let step = Double(max(0, ring - 1))
-        let lightened = min(0.86, base.L + step * 0.052)
         return base
-            .withLightness(lightened)
+            .withLightness(
+                min(0.93, base.L + step * 0.052 + siblingOffset(sibling, ring: ring) + boost)
+            )
             .withChroma(scale: max(0.45, 1 - step * 0.11))
             .color
     }
 
-    /// Hover highlight: same hue, pushed toward the light end.
-    static func highlighted(slot: Int, ring: Int, dark: Bool) -> Color {
-        guard slot >= 0 else { return dark ? Color(white: 0.58) : Color(white: 0.8) }
+    /// Slightly deeper variant of a slice's colour, for the inner edge of a
+    /// radial gradient. Gives the rings a sense of depth instead of reading as
+    /// flat paint.
+    static func deepened(
+        slot: Int, ring: Int, sibling: Int, dark: Bool
+    ) -> Color {
+        guard slot >= 0 else {
+            return Color(white: (dark ? 0.42 : 0.66) + siblingOffset(sibling, ring: ring) - 0.05)
+        }
         let base = base(slot: slot, dark: dark)
         let step = Double(max(0, ring - 1))
         return base
-            .withLightness(min(0.93, base.L + step * 0.052 + 0.1))
-            .withChroma(scale: max(0.5, 1 - step * 0.11))
+            .withLightness(
+                max(0.2, base.L + step * 0.052 + siblingOffset(sibling, ring: ring) - 0.055)
+            )
+            .withChroma(scale: max(0.45, 1 - step * 0.11))
             .color
     }
 }

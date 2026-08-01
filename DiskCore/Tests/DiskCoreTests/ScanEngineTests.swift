@@ -258,6 +258,33 @@ struct ScanEngineTests {
         #expect(store.fileCount[0] == 20)
     }
 
+    /// Not a fixture test: firmlinks cannot be created, only observed. Every Mac
+    /// since Catalina splits the boot disk in two and joins it with them, so `/`
+    /// containing a substantial `Users` is a fact of the platform — and the
+    /// difference between a useful whole-disk scan and an 11 GB one.
+    @Test("Scanning / crosses firmlinks onto the data volume")
+    func firmlinksAreCrossed() async throws {
+        let result = await ScanEngine.scan(root: "/")
+        let store = result.store
+        let users = try #require(
+            store.children(of: 0).first { store.name(of: $0) == "Users" }
+        )
+        #expect(store.totalAlloc[Int(users)] > 1_000_000_000)
+
+        // The data volume's own mount point must stay excluded, or everything
+        // below it would be counted twice.
+        let system = store.children(of: 0).first { store.name(of: $0) == "System" }
+        if let system,
+           let volumes = store.children(of: system)
+               .first(where: { store.name(of: $0) == "Volumes" }) {
+            let data = store.children(of: volumes)
+                .first { store.name(of: $0) == "Data" }
+            if let data {
+                #expect(store.flags[Int(data)].contains(.notDescended))
+            }
+        }
+    }
+
     @Test("Cancellation stops the scan and says so")
     func cancellation() async throws {
         let task = Task {

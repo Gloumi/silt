@@ -11,6 +11,9 @@ struct SunburstView: View {
     /// Geometry of the previous layout, keyed by node, used to animate a drill.
     @State private var previousGeometry: [Int32: Arc] = [:]
     @State private var transition: Double = 1
+    /// Scan the current arcs were built from. Node indices are only meaningful
+    /// within one store, so geometry from a previous scan must never be reused.
+    @State private var builtScanID = -1
     @State private var hovered: Arc?
     @State private var hoverPoint: CGPoint = .zero
 
@@ -57,9 +60,12 @@ struct SunburstView: View {
                 }
             }
         }
-        .onChange(of: model.currentNode, initial: true) { rebuild(animated: true) }
+        // Only a drill within the same scan animates. A new scan, a switch of
+        // size mode, or simply coming back to this tab rebuilds instantly —
+        // re-running an animation there reads as if the app were re-analysing.
+        .onChange(of: model.scanID, initial: true) { rebuild(animated: false) }
+        .onChange(of: model.currentNode) { rebuild(animated: true) }
         .onChange(of: model.useLogicalSize) { rebuild(animated: false) }
-        .onChange(of: model.rows.count) { rebuild(animated: false) }
     }
 
     // MARK: - Layout lifecycle
@@ -67,11 +73,15 @@ struct SunburstView: View {
     private func rebuild(animated: Bool) {
         guard let store = model.store else { arcs = []; return }
 
+        let sameScan = builtScanID == model.scanID
         var geometryByNode: [Int32: Arc] = [:]
-        for arc in arcs {
-            if let node = arc.node { geometryByNode[node] = arc }
+        if sameScan {
+            for arc in arcs {
+                if let node = arc.node { geometryByNode[node] = arc }
+            }
         }
         previousGeometry = geometryByNode
+        builtScanID = model.scanID
 
         arcs = SunburstLayout.build(
             store: store,
@@ -81,9 +91,9 @@ struct SunburstView: View {
         )
         hovered = nil
 
-        if animated, !previousGeometry.isEmpty {
+        if animated, sameScan, !geometryByNode.isEmpty {
             transition = 0
-            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
                 transition = 1
             }
         } else {
@@ -108,7 +118,9 @@ struct SunburstView: View {
             source = nil
         }
 
-        guard let from = source else { return (arc, transition) }
+        // No ancestor to grow from — show it straight away rather than fading
+        // in, so a rebuild can never leave an empty circle on screen.
+        guard let from = source else { return (arc, 1) }
 
         let t = transition
         var result = arc
@@ -142,11 +154,34 @@ struct SunburstView: View {
                 $0.node == arc.node && $0.ring == arc.ring
             } ?? false
 
-            let color = isHovered
-                ? Palette.highlighted(slot: arc.slot, ring: arc.ring, dark: isDark)
-                : Palette.color(slot: arc.slot, ring: arc.ring, dark: isDark)
+            let outerColor = isHovered
+                ? Palette.highlighted(
+                    slot: arc.slot, ring: arc.ring,
+                    sibling: arc.siblingIndex, dark: isDark)
+                : Palette.color(
+                    slot: arc.slot, ring: arc.ring,
+                    sibling: arc.siblingIndex, dark: isDark)
+            let innerColor = isHovered
+                ? outerColor
+                : Palette.deepened(
+                    slot: arc.slot, ring: arc.ring,
+                    sibling: arc.siblingIndex, dark: isDark)
 
-            context.fill(path, with: .color(color.opacity(opacity)))
+            // One radial gradient shared by every slice, anchored at the centre
+            // of the chart: the rings gain depth without any slice inventing a
+            // light source of its own.
+            context.fill(
+                path,
+                with: .radialGradient(
+                    Gradient(colors: [
+                        innerColor.opacity(opacity),
+                        outerColor.opacity(opacity),
+                    ]),
+                    center: metrics.center,
+                    startRadius: metrics.innerRadius,
+                    endRadius: metrics.outerRadius
+                )
+            )
         }
 
         drawLabels(context: context, metrics: metrics, ringFraction: ringFraction)

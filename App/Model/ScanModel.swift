@@ -26,6 +26,11 @@ final class ScanModel {
 
     var presentation: Presentation = .sunburst
 
+    /// Increments once per scan. Node indices only mean anything within a
+    /// single store, so anything caching geometry by node must drop it when
+    /// this changes.
+    private(set) var scanID = 0
+
     private(set) var phase: Phase = .idle
 
     /// Path from the scan root down to the directory on screen. Always starts
@@ -86,6 +91,7 @@ final class ScanModel {
             } else {
                 phase = .loaded(result)
                 trail = [0]
+                scanID += 1
                 refreshRows()
             }
         }

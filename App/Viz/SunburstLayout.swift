@@ -14,6 +14,9 @@ struct Arc: Identifiable {
     var size: Int64
     /// How many siblings an "others" slice stands for.
     var mergedCount: Int
+    /// Rank among its siblings, used to nudge lightness so that neighbours in
+    /// the same branch stay distinguishable without inventing a new hue.
+    var siblingIndex: Int
 
     var id: Int { (ring << 24) ^ Int(node ?? -1) ^ Int(startAngle * 1000) }
     var sweep: Double { endAngle - startAngle }
@@ -108,7 +111,8 @@ enum SunburstLayout {
                 endAngle: angle + sweep,
                 slot: childSlot,
                 size: childSize,
-                mergedCount: 0
+                mergedCount: 0,
+                siblingIndex: index
             ))
 
             if store.isDirectory(child) {
@@ -133,7 +137,8 @@ enum SunburstLayout {
                     endAngle: angle + sweep,
                     slot: -1,
                     size: mergedSize,
-                    mergedCount: mergedCount
+                    mergedCount: mergedCount,
+                    siblingIndex: children.count
                 ))
             }
         }

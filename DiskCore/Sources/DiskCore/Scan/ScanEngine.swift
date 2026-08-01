@@ -12,6 +12,10 @@ struct InodeKey: Hashable {
 private struct WorkItem {
     var node: Int32
     var path: String
+    /// Device of this directory as actually opened. Not inherited from the
+    /// parent's listing: a firmlink is reported with the *source* volume's
+    /// device, so only an fstat on the opened descriptor tells the truth.
+    var dev: Int32
 }
 
 /// Everything the workers share, behind one lock.
@@ -47,6 +51,7 @@ private struct PendingChild {
     var inode: InodeKey
     var isHardlinkCandidate: Bool
     var descendPath: String?
+    var dev: Int32
 }
 
 /// Reusable per-worker scratch space, so a scan of a million files does not
@@ -115,7 +120,9 @@ public enum ScanEngine {
                 files: 0,
                 flags: .directory
             )
-            inner.queue.append(WorkItem(node: rootIndex, path: resolvedRoot))
+            inner.queue.append(
+                WorkItem(node: rootIndex, path: resolvedRoot, dev: rootDev)
+            )
         }
 
         // Progress is polled rather than pushed: a callback per file would cost
@@ -163,7 +170,7 @@ public enum ScanEngine {
                         case .item(let item):
                             processDirectory(
                                 item, worker: worker, state: state,
-                                options: options, rootDev: rootDev
+                                options: options
                             )
                             state.mutex.withLock { $0.activeWorkers -= 1 }
                         }
@@ -205,8 +212,7 @@ public enum ScanEngine {
         _ item: WorkItem,
         worker: Worker,
         state: ScanState,
-        options: ScanOptions,
-        rootDev: Int32
+        options: ScanOptions
     ) {
         let isRoot = item.node == 0
         let fd: Int32
@@ -220,6 +226,11 @@ public enum ScanEngine {
             return
         }
         defer { close(fd) }
+
+        // The device of the directory we actually opened, which for a firmlink
+        // is the target volume rather than the one the parent listing claimed.
+        var opened = stat()
+        let currentDev = fstat(fd, &opened) == 0 ? opened.st_dev : item.dev
 
         worker.reset()
 
@@ -254,8 +265,13 @@ public enum ScanEngine {
                     if entry.isFirmlink { flags.insert(.firmlink) }
                     if entry.isMountPoint { flags.insert(.mountPoint) }
 
-                    let leavesVolume = entry.isMountPoint || entry.isFirmlink
-                        || (options.stayOnOneVolume && entry.devID != rootDev)
+                    // A firmlink is a seam inside one logical volume, not a
+                    // boundary between two; everything else that changes device
+                    // is a genuinely separate disk.
+                    let crossesFirmlink = entry.isFirmlink && options.followFirmlinks
+                    let leavesVolume = !crossesFirmlink
+                        && (entry.isMountPoint || entry.isFirmlink
+                            || (options.stayOnOneVolume && entry.devID != currentDev))
                     let isPackage = !options.descendIntoPackages
                         && isPackageName(childName)
                     if isPackage { flags.insert(.package) }
@@ -270,7 +286,7 @@ public enum ScanEngine {
                         flags.insert(.notDescended)
                         let sum = aggregateSubtree(
                             path: childPath, worker: worker,
-                            options: options, rootDev: rootDev
+                            options: options, parentDev: currentDev
                         )
                         alloc += sum.alloc
                         logical += sum.logical
@@ -296,7 +312,8 @@ public enum ScanEngine {
                     flags: flags,
                     inode: InodeKey(dev: entry.devID, ino: entry.fileID),
                     isHardlinkCandidate: entry.linkCount > 1 && !entry.isDirectory,
-                    descendPath: descendPath
+                    descendPath: descendPath,
+                    dev: entry.devID
                 ))
             }
         } catch {
@@ -360,7 +377,9 @@ public enum ScanEngine {
                 inner.bytesSeen += alloc
 
                 if let path = child.descendPath {
-                    inner.queue.append(WorkItem(node: index, path: path))
+                    inner.queue.append(WorkItem(
+                        node: index, path: path, dev: child.dev
+                    ))
                 }
             }
 
@@ -386,10 +405,10 @@ public enum ScanEngine {
     /// per-file breakdown is noise. Note this walks the subtree on the calling
     /// worker, so one very large collapsed directory is handled serially.
     private static func aggregateSubtree(
-        path: String, worker: Worker, options: ScanOptions, rootDev: Int32
+        path: String, worker: Worker, options: ScanOptions, parentDev: Int32
     ) -> Aggregate {
         var result = Aggregate()
-        var stack = [path]
+        var stack = [(path: path, dev: parentDev)]
         // A dedicated reader: this runs *inside* the caller's `enumerate`
         // callback, so reusing the worker's reader would overwrite the buffer
         // the caller is still reading from.
@@ -401,9 +420,11 @@ public enum ScanEngine {
         while let current = stack.popLast() {
             if Task.isCancelled { return result }
             guard let fd = try? DirectoryReader.openDirectory(
-                current, followSymlink: false
+                current.path, followSymlink: false
             ) else { continue }
             defer { close(fd) }
+            var opened = stat()
+            let dev = fstat(fd, &opened) == 0 ? opened.st_dev : current.dev
 
             try? reader.enumerate(fd: fd) { entry in
                 guard entry.nameBytes.count > 0 else { return }
@@ -411,12 +432,13 @@ public enum ScanEngine {
                 if entry.isDirectory {
                     result.alloc += entry.allocSize
                     result.logical += entry.logicalSize
-                    let leaves = entry.isMountPoint || entry.isFirmlink
-                        || (options.stayOnOneVolume && entry.devID != rootDev)
+                    let crossesFirmlink = entry.isFirmlink && options.followFirmlinks
+                    let leaves = !crossesFirmlink
+                        && (entry.isMountPoint || entry.isFirmlink
+                            || (options.stayOnOneVolume && entry.devID != dev))
                     if !leaves {
-                        stack.append(
-                            join(current, String(decoding: entry.nameBytes, as: UTF8.self))
-                        )
+                        let name = String(decoding: entry.nameBytes, as: UTF8.self)
+                        stack.append((join(current.path, name), entry.devID))
                     }
                     return
                 }

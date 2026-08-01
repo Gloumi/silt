@@ -14,9 +14,24 @@ public struct ScanOptions: Sendable {
         "Pods", ".gradle", ".terraform",
     ]
 
-    /// Never leave the volume the scan started on. Without this, scanning `/`
-    /// would wander into every mounted disk and double-count firmlinked data.
+    /// Never descend into another mounted volume.
     public var stayOnOneVolume: Bool = true
+
+    /// Follow firmlinks, which is what makes scanning `/` mean what a user
+    /// expects it to mean.
+    ///
+    /// Since Catalina the boot disk is two volumes: a read-only system volume
+    /// mounted at `/` (~11 GB) and a data volume holding everything else
+    /// (~450 GB). They are stitched together by firmlinks — `/Users`,
+    /// `/Applications`, `/Library`, `/private`… all live on the data volume
+    /// (`/usr/share/firmlinks` is the authoritative list). Refusing to cross
+    /// them makes a scan of `/` report only the system volume, which is both
+    /// technically defensible and completely useless.
+    ///
+    /// Crossing them does not double-count: the data volume's own mount point,
+    /// `/System/Volumes/Data`, is a plain mount point rather than a firmlink,
+    /// so `stayOnOneVolume` still keeps us out of it.
+    public var followFirmlinks: Bool = true
 
     /// Worker count.
     ///
