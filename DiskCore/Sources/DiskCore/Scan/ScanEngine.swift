@@ -1,0 +1,454 @@
+import Darwin
+import Foundation
+import Synchronization
+
+/// Identifies a physical inode, so a file reachable through several hard links
+/// is only counted once.
+struct InodeKey: Hashable {
+    var dev: Int32
+    var ino: UInt64
+}
+
+private struct WorkItem {
+    var node: Int32
+    var path: String
+}
+
+/// Everything the workers share, behind one lock.
+///
+/// The lock is taken once per *directory*, never per file: a worker reads a
+/// whole directory into thread-local buffers first and only then merges. That
+/// keeps contention negligible even with a dozen workers.
+private final class ScanState: Sendable {
+    struct Inner {
+        var store = NodeStore()
+        var queue: [WorkItem] = []
+        var activeWorkers = 0
+        /// Only ever holds inodes whose link count is > 1, so it stays small.
+        var seenInodes: Set<InodeKey> = []
+        var unreadable: [String] = []
+        var filesSeen = 0
+        var directoriesSeen = 0
+        var bytesSeen: Int64 = 0
+        var currentPath = ""
+    }
+
+    let mutex = Mutex(Inner())
+}
+
+/// A child discovered while reading a directory, before it gets a node index.
+private struct PendingChild {
+    var nameStart: Int
+    var nameCount: Int
+    var alloc: Int64
+    var logical: Int64
+    var files: Int32
+    var flags: NodeFlags
+    var inode: InodeKey
+    var isHardlinkCandidate: Bool
+    var descendPath: String?
+}
+
+/// Reusable per-worker scratch space, so a scan of a million files does not
+/// allocate a million times.
+private final class Worker {
+    let reader = DirectoryReader()
+    var nameBuffer: [UInt8] = []
+    var pending: [PendingChild] = []
+    /// Inodes seen inside collapsed subtrees, deduplicated later under the lock.
+    var collapsedLinks: [InodeKey] = []
+
+    func reset() {
+        nameBuffer.removeAll(keepingCapacity: true)
+        pending.removeAll(keepingCapacity: true)
+        collapsedLinks.removeAll(keepingCapacity: true)
+    }
+}
+
+private enum WorkResult {
+    case item(WorkItem)
+    /// Queue is empty and every worker is idle — the scan is over.
+    case finished
+    /// Queue is momentarily empty but peers are still producing work.
+    case retry
+}
+
+public enum ScanEngine {
+
+    /// Walks `root` and returns the fully rolled-up tree.
+    ///
+    /// Honours task cancellation: the result is still returned, with
+    /// `wasCancelled` set and partial totals.
+    public static func scan(
+        root: String,
+        options: ScanOptions = ScanOptions(),
+        progress: (@Sendable (ScanProgress) -> Void)? = nil
+    ) async -> ScanResult {
+        let started = Date()
+
+        guard let resolvedRoot = resolvePath(root) else {
+            return ScanResult(
+                store: NodeStore(), unreadablePaths: [root],
+                filesSeen: 0, directoriesSeen: 0,
+                duration: 0, wasCancelled: false
+            )
+        }
+
+        var rootStat = stat()
+        guard lstat(resolvedRoot, &rootStat) == 0 else {
+            return ScanResult(
+                store: NodeStore(), unreadablePaths: [resolvedRoot],
+                filesSeen: 0, directoriesSeen: 0,
+                duration: 0, wasCancelled: false
+            )
+        }
+        let rootDev = rootStat.st_dev
+
+        let state = ScanState()
+        state.mutex.withLock { inner in
+            inner.store.reserveCapacity(1 << 16)
+            let rootIndex = inner.store.append(
+                name: Array(resolvedRoot.utf8),
+                parent: 0, // the root is its own parent; `path(of:)` relies on it
+                alloc: Int64(rootStat.st_blocks) * 512,
+                logical: Int64(rootStat.st_size),
+                files: 0,
+                flags: .directory
+            )
+            inner.queue.append(WorkItem(node: rootIndex, path: resolvedRoot))
+        }
+
+        // Progress is polled rather than pushed: a callback per file would cost
+        // more than the scan itself, and the UI only needs ~10 Hz.
+        let reporter = progress.map { callback in
+            Task {
+                while !Task.isCancelled {
+                    let snapshot = state.mutex.withLock { inner in
+                        ScanProgress(
+                            filesSeen: inner.filesSeen,
+                            directoriesSeen: inner.directoriesSeen,
+                            bytesSeen: inner.bytesSeen,
+                            currentPath: inner.currentPath,
+                            isFinished: false
+                        )
+                    }
+                    callback(snapshot)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<options.workerCount {
+                group.addTask {
+                    let worker = Worker()
+                    while true {
+                        if Task.isCancelled { return }
+                        let next = state.mutex.withLock { inner -> WorkResult in
+                            if let item = inner.queue.popLast() {
+                                inner.activeWorkers += 1
+                                return .item(item)
+                            }
+                            return inner.activeWorkers == 0 ? .finished : .retry
+                        }
+                        switch next {
+                        case .finished:
+                            return
+                        case .retry:
+                            // Peers are still discovering directories. Yielding
+                            // in a tight loop here burns real CPU — measurably
+                            // so past ~8 workers — whereas a short sleep costs
+                            // nothing and the queue refills within microseconds.
+                            try? await Task.sleep(for: .microseconds(200))
+                        case .item(let item):
+                            processDirectory(
+                                item, worker: worker, state: state,
+                                options: options, rootDev: rootDev
+                            )
+                            state.mutex.withLock { $0.activeWorkers -= 1 }
+                        }
+                    }
+                }
+            }
+        }
+
+        reporter?.cancel()
+        let cancelled = Task.isCancelled
+
+        var result = state.mutex.withLock { inner -> ScanResult in
+            ScanResult(
+                store: inner.store,
+                unreadablePaths: inner.unreadable,
+                filesSeen: inner.filesSeen,
+                directoriesSeen: inner.directoriesSeen,
+                duration: Date().timeIntervalSince(started),
+                wasCancelled: cancelled
+            )
+        }
+        result.store.rollUp()
+
+        if let progress {
+            progress(ScanProgress(
+                filesSeen: result.filesSeen,
+                directoriesSeen: result.directoriesSeen,
+                bytesSeen: result.rootTotalAlloc,
+                currentPath: "",
+                isFinished: true
+            ))
+        }
+        return result
+    }
+
+    // MARK: - One directory
+
+    private static func processDirectory(
+        _ item: WorkItem,
+        worker: Worker,
+        state: ScanState,
+        options: ScanOptions,
+        rootDev: Int32
+    ) {
+        let isRoot = item.node == 0
+        let fd: Int32
+        do {
+            fd = try DirectoryReader.openDirectory(item.path, followSymlink: isRoot)
+        } catch {
+            state.mutex.withLock { inner in
+                inner.store.markFlag(.unreadable, on: item.node)
+                if inner.unreadable.count < 4096 { inner.unreadable.append(item.path) }
+            }
+            return
+        }
+        defer { close(fd) }
+
+        worker.reset()
+
+        do {
+            try worker.reader.enumerate(fd: fd) { entry in
+                guard entry.nameBytes.count > 0 else { return }
+                // getattrlistbulk does not vend "." or "..", but a hostile or
+                // exotic filesystem might.
+                let name = entry.nameBytes
+                if name.count <= 2, name[0] == UInt8(ascii: ".") {
+                    if name.count == 1 { return }
+                    if name[1] == UInt8(ascii: ".") { return }
+                }
+
+                let nameStart = worker.nameBuffer.count
+                worker.nameBuffer.append(contentsOf: name)
+
+                var flags = NodeFlags()
+                var alloc = entry.allocSize
+                var logical = entry.logicalSize
+                var files: Int32 = 1
+                var descendPath: String?
+
+                if entry.isSymlink {
+                    flags.insert(.symlink)
+                } else if entry.isDirectory {
+                    flags.insert(.directory)
+                    files = 0
+                    let childName = String(decoding: name, as: UTF8.self)
+                    let childPath = join(item.path, childName)
+
+                    if entry.isFirmlink { flags.insert(.firmlink) }
+                    if entry.isMountPoint { flags.insert(.mountPoint) }
+
+                    let leavesVolume = entry.isMountPoint || entry.isFirmlink
+                        || (options.stayOnOneVolume && entry.devID != rootDev)
+                    let isPackage = !options.descendIntoPackages
+                        && isPackageName(childName)
+                    if isPackage { flags.insert(.package) }
+                    let isCollapsed =
+                        options.collapsedDirectoryNames.contains(childName)
+
+                    if leavesVolume {
+                        // Counted as an empty node: its contents belong to
+                        // another volume and would be double-counted.
+                        flags.insert(.notDescended)
+                    } else if isPackage || isCollapsed {
+                        flags.insert(.notDescended)
+                        let sum = aggregateSubtree(
+                            path: childPath, worker: worker,
+                            options: options, rootDev: rootDev
+                        )
+                        alloc += sum.alloc
+                        logical += sum.logical
+                        files = sum.files
+                    } else {
+                        descendPath = childPath
+                    }
+                } else if !entry.isRegularFile {
+                    // Sockets, fifos, devices: they exist, they take no space.
+                    files = 1
+                }
+
+                if entry.bsdFlags & UF_COMPRESSED_FLAG != 0 {
+                    flags.insert(.compressed)
+                }
+
+                worker.pending.append(PendingChild(
+                    nameStart: nameStart,
+                    nameCount: name.count,
+                    alloc: alloc,
+                    logical: logical,
+                    files: files,
+                    flags: flags,
+                    inode: InodeKey(dev: entry.devID, ino: entry.fileID),
+                    isHardlinkCandidate: entry.linkCount > 1 && !entry.isDirectory,
+                    descendPath: descendPath
+                ))
+            }
+        } catch {
+            // Partial read: keep whatever we already collected, but flag it.
+            state.mutex.withLock { inner in
+                inner.store.markFlag(.unreadable, on: item.node)
+                if inner.unreadable.count < 4096 { inner.unreadable.append(item.path) }
+            }
+        }
+
+        merge(worker: worker, into: state, parent: item.node, parentPath: item.path)
+    }
+
+    /// Publishes one directory's children into the shared tree.
+    private static func merge(
+        worker: Worker, into state: ScanState, parent: Int32, parentPath: String
+    ) {
+        state.mutex.withLock { inner in
+            let start = Int32(inner.store.count)
+
+            // Hard-linked files inside collapsed subtrees were already paid for
+            // by the aggregate (deduplicated within that subtree). Register them
+            // globally so a later regular file pointing at the same inode is not
+            // charged a second time.
+            inner.seenInodes.formUnion(worker.collapsedLinks)
+
+            for child in worker.pending {
+                var alloc = child.alloc
+                var logical = child.logical
+                var flags = child.flags
+
+                if child.isHardlinkCandidate {
+                    if !inner.seenInodes.insert(child.inode).inserted {
+                        // Another link to this inode already paid for the bytes.
+                        alloc = 0
+                        logical = 0
+                        flags.insert(.hardlinkDuplicate)
+                    }
+                }
+
+                let nameSlice = worker.nameBuffer[
+                    child.nameStart..<(child.nameStart + child.nameCount)
+                ]
+                let index = inner.store.append(
+                    name: nameSlice,
+                    parent: parent,
+                    alloc: alloc,
+                    logical: logical,
+                    files: child.files,
+                    flags: flags
+                )
+
+                if flags.contains(.directory) {
+                    inner.directoriesSeen += 1
+                    // Non-zero only for collapsed directories, whose files got
+                    // no nodes of their own.
+                    inner.filesSeen += Int(child.files)
+                } else {
+                    inner.filesSeen += 1
+                }
+                inner.bytesSeen += alloc
+
+                if let path = child.descendPath {
+                    inner.queue.append(WorkItem(node: index, path: path))
+                }
+            }
+
+            inner.store.setChildren(
+                of: parent, start: start,
+                count: Int32(worker.pending.count)
+            )
+            inner.currentPath = parentPath
+        }
+    }
+
+    // MARK: - Collapsed subtrees
+
+    private struct Aggregate {
+        var alloc: Int64 = 0
+        var logical: Int64 = 0
+        var files: Int32 = 0
+    }
+
+    /// Sums a subtree without creating any nodes for it.
+    ///
+    /// Used for `node_modules`, `.git`, bundles… where the total matters but the
+    /// per-file breakdown is noise. Note this walks the subtree on the calling
+    /// worker, so one very large collapsed directory is handled serially.
+    private static func aggregateSubtree(
+        path: String, worker: Worker, options: ScanOptions, rootDev: Int32
+    ) -> Aggregate {
+        var result = Aggregate()
+        var stack = [path]
+        // A dedicated reader: this runs *inside* the caller's `enumerate`
+        // callback, so reusing the worker's reader would overwrite the buffer
+        // the caller is still reading from.
+        let reader = DirectoryReader()
+        // Hard links are common inside collapsed trees (pnpm's store links every
+        // package file), so deduplicate within the subtree.
+        var localLinks: Set<InodeKey> = []
+
+        while let current = stack.popLast() {
+            if Task.isCancelled { return result }
+            guard let fd = try? DirectoryReader.openDirectory(
+                current, followSymlink: false
+            ) else { continue }
+            defer { close(fd) }
+
+            try? reader.enumerate(fd: fd) { entry in
+                guard entry.nameBytes.count > 0 else { return }
+
+                if entry.isDirectory {
+                    result.alloc += entry.allocSize
+                    result.logical += entry.logicalSize
+                    let leaves = entry.isMountPoint || entry.isFirmlink
+                        || (options.stayOnOneVolume && entry.devID != rootDev)
+                    if !leaves {
+                        stack.append(
+                            join(current, String(decoding: entry.nameBytes, as: UTF8.self))
+                        )
+                    }
+                    return
+                }
+
+                result.files += 1
+                if entry.linkCount > 1 {
+                    let key = InodeKey(dev: entry.devID, ino: entry.fileID)
+                    guard localLinks.insert(key).inserted else { return }
+                }
+                result.alloc += entry.allocSize
+                result.logical += entry.logicalSize
+            }
+        }
+        worker.collapsedLinks.append(contentsOf: localLinks)
+        return result
+    }
+
+    // MARK: - Helpers
+
+    private static func join(_ directory: String, _ name: String) -> String {
+        directory.hasSuffix("/") ? directory + name : directory + "/" + name
+    }
+
+    private static func isPackageName(_ name: String) -> Bool {
+        guard let dot = name.lastIndex(of: ".") else { return false }
+        let ext = name[name.index(after: dot)...].lowercased()
+        return packageExtensions.contains(ext)
+    }
+
+    private static func resolvePath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+}
