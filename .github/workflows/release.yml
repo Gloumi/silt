@@ -63,7 +63,7 @@ jobs:
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
         run: |
-          xcrun notarytool store-credentials strata-notary \
+          xcrun notarytool store-credentials silt-notary \
             --apple-id "$NOTARY_APPLE_ID" \
             --team-id "$NOTARY_TEAM_ID" \
             --password "$NOTARY_PASSWORD"
@@ -92,12 +92,12 @@ jobs:
             ### Installation
 
             ```sh
-            brew install --cask strata
+            brew install --cask silt
             ```
 
             Ou téléchargez le DMG ci-dessous.
 
             `sha256: ${{ steps.checksum.outputs.sha256 }}`
 
-            > Strata a besoin de l'**accès complet au disque** pour analyser
+            > Silt a besoin de l'**accès complet au disque** pour analyser
             > l'intégralité de votre Mac. L'app vous guide au premier lancement.

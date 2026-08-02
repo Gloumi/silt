@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Builds Strata, signs it, packages a DMG and notarises it.
+# Builds Silt, signs it, packages a DMG and notarises it.
 #
 # Every step past the build is optional and degrades on its own: without a
 # Developer ID certificate you still get a working .app and .dmg, just one that
@@ -12,16 +12,16 @@
 #   ./Scripts/release.sh --notarize      # also submit to Apple (needs a profile)
 #
 # Notarisation expects credentials stored once, under this profile name:
-#   xcrun notarytool store-credentials strata-notary \
+#   xcrun notarytool store-credentials silt-notary \
 #     --apple-id you@example.com --team-id TEAMID --password APP-SPECIFIC-PASSWORD
 #
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP_NAME="Strata"
+APP_NAME="Silt"
 BUILD_DIR="build"
-NOTARY_PROFILE="${NOTARY_PROFILE:-strata-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-silt-notary}"
 NOTARIZE=false
 [[ "${1:-}" == "--notarize" ]] && NOTARIZE=true
 

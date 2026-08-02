@@ -23,7 +23,7 @@ struct WelcomeSheet: View {
                     Text(granted ? "Accès complet accordé" : "Accès complet au disque")
                         .font(.title3.weight(.semibold))
                     Text(granted
-                         ? "Strata peut analyser l'intégralité de votre disque."
+                         ? "Silt peut analyser l'intégralité de votre disque."
                          : "Sans cette autorisation, certains dossiers restent invisibles.")
                         .foregroundStyle(.secondary)
                 }
@@ -54,7 +54,7 @@ struct WelcomeSheet: View {
                 if !granted {
                     Button("Ouvrir les Réglages") { FullDiskAccess.openSettings() }
                         .buttonStyle(.borderedProminent)
-                    Button("Révéler Strata") { FullDiskAccess.revealApplication() }
+                    Button("Révéler Silt") { FullDiskAccess.revealApplication() }
                         .help("Pour la faire glisser dans la liste des autorisations")
                 }
                 Spacer()
@@ -76,8 +76,8 @@ struct WelcomeSheet: View {
     private var steps: some View {
         VStack(alignment: .leading, spacing: 5) {
             step(1, "Ouvrez Réglages Système › Confidentialité et sécurité › Accès complet au disque.")
-            step(2, "Activez Strata dans la liste, ou faites-la glisser depuis le Finder.")
-            step(3, "Relancez Strata — macOS l'exige pour appliquer l'autorisation.")
+            step(2, "Activez Silt dans la liste, ou faites-la glisser depuis le Finder.")
+            step(3, "Relancez Silt — macOS l'exige pour appliquer l'autorisation.")
         }
         .font(.callout)
     }

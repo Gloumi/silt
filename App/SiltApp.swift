@@ -3,11 +3,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @main
-struct StrataApp: App {
+struct SiltApp: App {
     @State private var model = ScanModel()
 
     var body: some Scene {
-        Window("Strata", id: "main") {
+        Window("Silt", id: "main") {
             ContentView(model: model)
         }
         .windowToolbarStyle(.unified(showsTitle: false))

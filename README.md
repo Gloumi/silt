@@ -1,9 +1,9 @@
-# Strata
+# Silt
 
 Analyseur d'espace disque pour macOS. Natif, rapide, open source.
 
 Les bons analyseurs d'espace disque macOS sont payants ; les gratuits ont vieilli.
-Strata vise les deux bouts : un moteur très rapide et une interface qui ressemble
+Silt vise les deux bouts : un moteur très rapide et une interface qui ressemble
 à une app macOS d'aujourd'hui.
 
 ---
@@ -11,11 +11,11 @@ Strata vise les deux bouts : un moteur très rapide et une interface qui ressemb
 ## Installation
 
 ```sh
-brew tap USER/strata
-brew install --cask strata
+brew tap USER/silt
+brew install --cask silt
 ```
 
-Ou téléchargez le DMG depuis les [releases](https://github.com/USER/strata/releases).
+Ou téléchargez le DMG depuis les [releases](https://github.com/USER/silt/releases).
 
 > **Accès complet au disque.** macOS protège Mail, Messages, Photos et les
 > sauvegardes d'appareils. Sans autorisation, ces dossiers sont signalés comme
@@ -81,8 +81,8 @@ Mesuré sur un MacBook 10 cœurs : **2,4 millions de fichiers en 15 s**, soit
 
 ```sh
 brew install xcodegen
-xcodegen generate          # produit Strata.xcodeproj, non versionné
-open Strata.xcodeproj
+xcodegen generate          # produit Silt.xcodeproj, non versionné
+open Silt.xcodeproj
 ```
 
 Le projet se décrit dans [`project.yml`](project.yml) ; le `.xcodeproj` est un

@@ -1,7 +1,7 @@
-name: Strata
+name: Silt
 
 options:
-  bundleIdPrefix: app.strata
+  bundleIdPrefix: app.silt
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
@@ -12,7 +12,7 @@ packages:
     path: DiskCore
 
 targets:
-  Strata:
+  Silt:
     type: application
     platform: macOS
     sources:
@@ -23,8 +23,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleName: Strata
-        CFBundleDisplayName: Strata
+        CFBundleName: Silt
+        CFBundleDisplayName: Silt
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
@@ -34,7 +34,7 @@ targets:
         NSSupportsSuddenTermination: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.strata.mac
+        PRODUCT_BUNDLE_IDENTIFIER: app.silt.mac
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
