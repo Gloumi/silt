@@ -99,6 +99,10 @@ struct CleanupView: View {
                                 isCollapsed: collapsed.contains(section.category.id),
                                 toggle: { toggle(section.category.id) }
                             )
+                            // The list draws one under the header and another
+                            // above the first row, a hair apart — which reads
+                            // as a double rule rather than a separator.
+                            .listRowSeparator(.hidden)
                         }
                     }
                 }
@@ -109,25 +113,34 @@ struct CleanupView: View {
 
     @ViewBuilder
     private func rows(of section: CategorySection) -> some View {
-        ForEach(section.groups) { group in
-            // A rule that matched once needs no folder around it.
-            if group.findings.count == 1, let finding = group.findings.first {
+        // A category with a single rule would repeat itself: "Caches
+        // d'applications · 142" followed by "Cache d'application · 142
+        // dossiers" says the same thing twice and costs a click.
+        if section.groups.count == 1, let only = section.groups.first {
+            ForEach(only.findings) { finding in
                 FindingRow(model: model, finding: finding, indented: false)
-            } else {
-                RuleHeader(
-                    group: group, model: model,
-                    isExpanded: expandedRules.contains(group.id),
-                    toggle: {
-                        if expandedRules.contains(group.id) {
-                            expandedRules.remove(group.id)
-                        } else {
-                            expandedRules.insert(group.id)
+            }
+        } else {
+            ForEach(section.groups) { group in
+                // A rule that matched once needs no folder around it either.
+                if group.findings.count == 1, let finding = group.findings.first {
+                    FindingRow(model: model, finding: finding, indented: false)
+                } else {
+                    RuleHeader(
+                        group: group, model: model,
+                        isExpanded: expandedRules.contains(group.id),
+                        toggle: {
+                            if expandedRules.contains(group.id) {
+                                expandedRules.remove(group.id)
+                            } else {
+                                expandedRules.insert(group.id)
+                            }
                         }
-                    }
-                )
-                if expandedRules.contains(group.id) {
-                    ForEach(group.findings) { finding in
-                        FindingRow(model: model, finding: finding, indented: true)
+                    )
+                    if expandedRules.contains(group.id) {
+                        ForEach(group.findings) { finding in
+                            FindingRow(model: model, finding: finding, indented: true)
+                        }
                     }
                 }
             }
@@ -423,7 +436,15 @@ private struct FindingRow: View {
     let finding: JunkFinding
     let indented: Bool
 
+    @State private var isHovered = false
+
     private var isChecked: Bool { model.junkSelection.contains(finding.node) }
+
+    private func revealInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting(
+            [URL(fileURLWithPath: finding.path)]
+        )
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -463,20 +484,30 @@ private struct FindingRow: View {
 
             Spacer(minLength: 10)
 
+            // Only on hover: a permanent button on every one of several hundred
+            // rows would be visual noise, and the path is the thing you want to
+            // check before ticking something.
+            Button(action: revealInFinder) {
+                Image(systemName: "magnifyingglass")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovered ? 1 : 0)
+            .help("Afficher dans le Finder")
+            .accessibilityLabel("Afficher dans le Finder")
+
             Text(Format.bytes(finding.bytes))
                 .monospacedDigit()
                 .fontWeight(.medium)
         }
         .padding(.vertical, 3)
         .contentShape(.rect)
+        .onHover { isHovered = $0 }
         .onTapGesture { model.toggleJunk(finding.node) }
         .contextMenu {
             Button("Voir dans l'arborescence") { model.reveal(finding.node) }
-            Button("Afficher dans le Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting(
-                    [URL(fileURLWithPath: finding.path)]
-                )
-            }
+            Button("Afficher dans le Finder", action: revealInFinder)
         }
     }
 

@@ -373,7 +373,7 @@
       "category": "models",
       "title": "Modèles Ollama",
       "safety": "caution",
-      "recovery": "ollama pull — re-téléchargement long selon les modèles",
+      "recovery": "Pour supprimer un modèle précis, utilisez l'interface d'Ollama ou « ollama rm <nom> »",
       "match": { "homePath": ".ollama/models" }
     },
     {
