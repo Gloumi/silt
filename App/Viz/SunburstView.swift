@@ -5,9 +5,20 @@ struct SunburstView: View {
     let model: ScanModel
 
     static let maxRings = 4
+    /// Shortest slice we are willing to draw, in points along its own arc.
+    /// Below this it is a hairline nobody can aim at.
+    private static let minimumArcLength = 6.0
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var arcs: [Arc] = []
+    /// Rings the tree actually fills, up to `maxRings`. A folder one level deep
+    /// used to occupy only the innermost quarter and leave the rest blank.
+    @State private var usedRings = SunburstView.maxRings
+    /// Last size the layout was built for. The merge threshold is expressed in
+    /// points, so the layout depends on it.
+    @State private var lastSize: CGSize = .zero
+    /// Set when an "others" slice is opened, to list what it stands for.
+    @State private var othersArc: Arc?
     /// Geometry of the previous layout, keyed by node, used to animate a drill.
     @State private var previousGeometry: [Int32: Arc] = [:]
     @State private var transition: Double = 1
@@ -25,7 +36,7 @@ struct SunburstView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let metrics = Metrics(size: geometry.size)
+            let metrics = Metrics(size: geometry.size, rings: usedRings)
 
             ZStack {
                 Canvas { context, _ in
@@ -74,6 +85,15 @@ struct SunburstView: View {
                         .allowsHitTesting(false)
                 }
             }
+            // The merge threshold is a length in points, so the layout depends
+            // on how big the chart is drawn. Rebuilt on a step change only —
+            // dragging a window edge must not rebuild on every pixel.
+            .onChange(of: geometry.size, initial: true) { _, size in
+                guard abs(size.width - lastSize.width) > 8
+                    || abs(size.height - lastSize.height) > 8 else { return }
+                lastSize = size
+                rebuild(animated: false)
+            }
         }
         // Only a drill within the same scan animates. A new scan, a switch of
         // size mode, or simply coming back to this tab rebuilds instantly —
@@ -83,12 +103,15 @@ struct SunburstView: View {
         .onChange(of: model.useLogicalSize) { rebuild(animated: false) }
         // Redraw as the scan fills the tree in.
         .onChange(of: model.rows.count) { rebuild(animated: false) }
+        .sheet(item: $othersArc) { arc in
+            OthersSheet(model: model, arc: arc) { othersArc = nil }
+        }
     }
 
     // MARK: - Layout lifecycle
 
     private func rebuild(animated: Bool) {
-        guard let store = model.store else { arcs = []; return }
+        guard let store = model.store else { arcs = []; usedRings = 1; return }
 
         let sameScan = builtScanID == model.scanID
         var geometryByNode: [Int32: Arc] = [:]
@@ -100,12 +123,26 @@ struct SunburstView: View {
         previousGeometry = geometryByNode
         builtScanID = model.scanID
 
-        arcs = SunburstLayout.build(
-            store: store,
-            root: model.currentNode,
-            maxRings: Self.maxRings,
-            useLogicalSize: model.useLogicalSize
-        )
+        // Two passes on purpose. The merge threshold is a length in points, so
+        // it depends on the ring width — which depends on how many rings the
+        // tree actually fills, which is only known once it is built. The layout
+        // costs about 0.1 ms, so measuring and redoing it beats guessing.
+        func build(rings: Int) -> [Arc] {
+            SunburstLayout.build(
+                store: store,
+                root: model.currentNode,
+                maxRings: Self.maxRings,
+                useLogicalSize: model.useLogicalSize,
+                minimumSweep: minimumSweep(rings: rings)
+            )
+        }
+
+        var built = build(rings: Self.maxRings)
+        let depth = ringsFilled(by: built)
+        if depth != Self.maxRings { built = build(rings: depth) }
+
+        arcs = built
+        usedRings = ringsFilled(by: built)
         hovered = nil
 
         if animated, sameScan, !geometryByNode.isEmpty {
@@ -116,6 +153,23 @@ struct SunburstView: View {
         } else {
             transition = 1
         }
+    }
+
+    private func ringsFilled(by arcs: [Arc]) -> Int {
+        max(1, arcs.map(\.ring).max() ?? 1)
+    }
+
+    /// Smallest sweep worth drawing, derived from the radius it will be drawn
+    /// at rather than fixed once and for all.
+    ///
+    /// The old constant of 0.006 rad was under two points of arc on the inner
+    /// ring of a 300 pt chart — visible, but not something anyone could click.
+    /// Ring 1 is the worst case since it has the smallest radius.
+    private func minimumSweep(rings: Int) -> Double {
+        let size = lastSize == .zero ? CGSize(width: 420, height: 420) : lastSize
+        let radius = Metrics(size: size, rings: rings).radius(ring: 1, fraction: 0.5)
+        guard radius > 0 else { return 0.006 }
+        return min(0.05, max(0.006, Self.minimumArcLength / radius))
     }
 
     /// Where an arc should be drawn right now, part-way through a drill.
@@ -149,23 +203,52 @@ struct SunburstView: View {
     // MARK: - Drawing
 
     private func draw(context: GraphicsContext, metrics: Metrics) {
-        let ringFraction = 1.0 / Double(Self.maxRings)
+        // Geometry first, drawing second: the shadow needs the silhouette of
+        // what is actually there, and the labels need each slice's own path to
+        // clip against.
+        var shapes: [(arc: Arc, path: Path, opacity: Double)] = []
+        shapes.reserveCapacity(arcs.count)
+        var silhouette = Path()
 
         for arc in arcs {
             let (shape, opacity) = interpolated(arc)
             // Fractional ring during the transition would need radius easing
             // too; the angular slide already carries the motion.
             let inner = metrics.radius(ring: shape.ring, fraction: 0)
-            let outer = metrics.radius(ring: shape.ring, fraction: ringFraction)
+            let outer = metrics.radius(ring: shape.ring, fraction: 1)
+            let gap = Self.gapRadians(for: shape.sweep)
 
+            // A hairline of background, not a groove. The old 2 pt radial gap
+            // plus a wider angle read as heavy black seams.
             guard let path = annularSector(
                 center: metrics.center,
-                innerRadius: inner + 0.5,
-                outerRadius: outer - 1.5,
+                innerRadius: inner + 0.25,
+                outerRadius: outer - 0.75,
                 startAngle: shape.startAngle,
                 endAngle: shape.endAngle,
-                gapRadians: min(0.010, shape.sweep * 0.07)
+                gapRadians: gap
             ) else { continue }
+
+            // Same wedge without the gaps, so neighbours weld into one shape.
+            if let solid = annularSector(
+                center: metrics.center,
+                innerRadius: inner, outerRadius: outer,
+                startAngle: shape.startAngle, endAngle: shape.endAngle,
+                gapRadians: 0
+            ) {
+                silhouette.addPath(solid)
+            }
+            shapes.append((arc, path, opacity))
+        }
+
+        drawPlateShadow(context: context, silhouette: silhouette)
+
+        var selected: [Path] = []
+
+        for (arc, path, opacity) in shapes {
+            let shape = interpolated(arc).0
+            let outerRadius = metrics.radius(ring: shape.ring, fraction: 1)
+            let gap = Self.gapRadians(for: shape.sweep)
 
             let isHovered = hovered.map {
                 $0.node == arc.node && $0.ring == arc.ring
@@ -201,45 +284,224 @@ struct SunburstView: View {
                 )
             )
 
-            if isSelected {
+            // A lit edge along the outer rim only. Strokes the boundary rather
+            // than the fill, so the validated palette is untouched.
+            if let rim = outerEdge(
+                center: metrics.center, radius: outerRadius - 1.1,
+                startAngle: shape.startAngle, endAngle: shape.endAngle,
+                gapRadians: gap
+            ) {
                 context.stroke(
-                    path,
-                    with: .color(isDark ? .white : .black),
-                    lineWidth: 1.5
+                    rim,
+                    with: .color(.white.opacity(isDark ? 0.16 : 0.30)),
+                    lineWidth: 1
                 )
             }
+
+            if isSelected { selected.append(path) }
         }
 
-        drawLabels(context: context, metrics: metrics, ringFraction: ringFraction)
+        drawSheen(context: context, silhouette: silhouette, metrics: metrics)
+
+        // Above the sheen, so a picked slice stays unambiguous wherever it sits
+        // under the lighting.
+        for path in selected {
+            context.stroke(path, with: .color(isDark ? .white : .black), lineWidth: 1.5)
+        }
+
+        drawLabels(context: context, metrics: metrics, shapes: shapes)
+    }
+
+    /// Angular gap between neighbouring slices, in radians.
+    private static func gapRadians(for sweep: Double) -> Double {
+        min(0.006, sweep * 0.05)
+    }
+
+    /// Soft shadow around the rings, and nowhere else.
+    ///
+    /// Cast by the silhouette of what is actually drawn, not by the full
+    /// annulus — branches shallower than the deepest one leave their outer
+    /// rings empty, and a full-annulus plate showed through there as a black
+    /// wedge.
+    ///
+    /// Clipped to the *outside* of that silhouette: the shape has to be filled
+    /// for anything to cast a shadow, but that fill would otherwise show
+    /// through every gap between slices as a hard black seam, which is exactly
+    /// what made the first attempt look harsher rather than softer.
+    private func drawPlateShadow(context: GraphicsContext, silhouette: Path) {
+        guard !silhouette.isEmpty else { return }
+        var layer = context
+        layer.clip(to: silhouette, options: .inverse)
+        layer.addFilter(.shadow(
+            color: .black.opacity(isDark ? 0.55 : 0.26),
+            radius: 16, x: 0, y: 6
+        ))
+        layer.fill(silhouette, with: .color(.black))
+    }
+
+    /// A single light source above the chart, laid over the finished rings.
+    ///
+    /// This is what actually reads as depth. Per-slice shading cannot do it —
+    /// each slice would carry its own highlight and the disc would look like a
+    /// mosaic rather than one object. Applied uniformly, so the hue separation
+    /// the palette was validated for is preserved.
+    private func drawSheen(context: GraphicsContext, silhouette: Path, metrics: Metrics) {
+        guard !silhouette.isEmpty else { return }
+        let center = metrics.center
+        let radius = metrics.outerRadius
+
+        // Soft light rather than plain alpha. Painting translucent white over a
+        // colour drags it toward grey — which is precisely why the first
+        // attempt came out muted. Soft light lightens without desaturating, so
+        // the extra chroma in the palette survives the lighting.
+        var lighting = context
+        lighting.blendMode = .softLight
+        lighting.fill(
+            silhouette,
+            with: .linearGradient(
+                Gradient(stops: [
+                    .init(color: .white.opacity(0.85), location: 0),
+                    .init(color: .white.opacity(0.25), location: 0.34),
+                    .init(color: .clear, location: 0.54),
+                    .init(color: .black.opacity(0.40), location: 1),
+                ]),
+                startPoint: CGPoint(x: center.x, y: center.y - radius),
+                endPoint: CGPoint(x: center.x, y: center.y + radius)
+            )
+        )
+
+        // The glass part: one broad specular dome across the top, clipped to the
+        // rings so it never spills into the gaps or past the rim.
+        var gloss = context
+        gloss.clip(to: silhouette)
+        let dome = Path(ellipseIn: CGRect(
+            x: center.x - radius * 1.15,
+            y: center.y - radius * 1.62,
+            width: radius * 2.3,
+            height: radius * 1.85
+        ))
+        gloss.fill(
+            dome,
+            with: .linearGradient(
+                Gradient(stops: [
+                    .init(color: .white.opacity(isDark ? 0.20 : 0.26), location: 0),
+                    .init(color: .white.opacity(isDark ? 0.07 : 0.10), location: 0.55),
+                    .init(color: .clear, location: 1),
+                ]),
+                startPoint: CGPoint(x: center.x, y: center.y - radius),
+                endPoint: CGPoint(x: center.x, y: center.y + radius * 0.12)
+            )
+        )
+    }
+
+    /// Just the outer boundary of a slice, as a stroke-able path.
+    private func outerEdge(
+        center: CGPoint, radius: Double,
+        startAngle: Double, endAngle: Double, gapRadians: Double
+    ) -> Path? {
+        let start = startAngle + gapRadians / 2
+        let end = endAngle - gapRadians / 2
+        guard end > start, radius > 0 else { return nil }
+        var path = Path()
+        path.addArc(
+            center: center, radius: radius,
+            startAngle: .radians(start), endAngle: .radians(end),
+            clockwise: false
+        )
+        return path
     }
 
     /// Labels only where they genuinely fit — the light-mode palette sits below
     /// 3:1 on three hues, so visible labels are the required relief, but a label
     /// crammed into a sliver is worse than none.
     private func drawLabels(
-        context: GraphicsContext, metrics: Metrics, ringFraction: Double
+        context: GraphicsContext, metrics: Metrics,
+        shapes: [(arc: Arc, path: Path, opacity: Double)]
     ) {
-        for arc in arcs where arc.sweep > 0.22 && arc.ring <= 3 {
-            guard transition >= 1, let node = arc.node, let store = model.store
-            else { continue }
+        guard transition >= 1, let store = model.store else { return }
+        let ringWidth = metrics.ringWidth
+        guard ringWidth >= 14 else { return }
 
-            let radius = (metrics.radius(ring: arc.ring, fraction: 0)
-                + metrics.radius(ring: arc.ring, fraction: ringFraction)) / 2
+        for (arc, path, _) in shapes where arc.sweep > 0.18 {
+            let radius = metrics.radius(ring: arc.ring, fraction: 0.5)
+
+            // The text is drawn horizontally, so what it has to fit inside is
+            // the chord across the slice, not the arc length along it. Near 3
+            // and 9 o'clock those two are perpendicular, which is how long
+            // names used to spill over the neighbouring rings.
+            let chord = 2 * radius * sin(min(arc.sweep, .pi) / 2)
+            let available = min(chord, ringWidth * 3.4) - 6
+            guard available >= 26 else { continue }
+
+            let name: String
+            if let node = arc.node {
+                name = store.name(of: node)
+            } else {
+                name = "Autres (\(arc.mergedCount))"
+            }
+            guard let resolved = fittedLabel(
+                name, width: available, context: context
+            ) else { continue }
+
             let point = CGPoint(
                 x: metrics.center.x + cos(arc.midAngle) * radius,
                 y: metrics.center.y + sin(arc.midAngle) * radius
             )
 
-            let text = Text(store.name(of: node))
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(isDark ? .white : .black)
-            let resolved = context.resolve(text)
-            let measured = resolved.measure(in: CGSize(width: 200, height: 20))
-
-            // Chord available at this radius; skip if the name cannot fit.
-            guard measured.width < arc.sweep * radius * 0.92 else { continue }
-            context.draw(resolved, at: point)
+            // Clipped to its own slice. The geometry above should be enough,
+            // but a label escaping its slice is the most visible defect there
+            // is, so it is also made impossible.
+            var layer = context
+            layer.clip(to: path)
+            layer.addFilter(.shadow(
+                color: (isDark ? Color.black : Color.white).opacity(0.55),
+                radius: 1.5
+            ))
+            layer.draw(resolved, at: point)
         }
+    }
+
+    /// The name, truncated with an ellipsis until it fits, or nil if even one
+    /// character will not.
+    ///
+    /// Measured against `greatestFiniteMagnitude`: measuring inside the width
+    /// we are testing against returns a value clamped to that width, so the
+    /// comparison could never fail. The treemap hit the same trap.
+    private func fittedLabel(
+        _ name: String, width: Double, context: GraphicsContext
+    ) -> GraphicsContext.ResolvedText? {
+        let unbounded = CGSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        func resolve(_ string: String) -> GraphicsContext.ResolvedText {
+            context.resolve(
+                Text(string)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(isDark ? .white : .black)
+            )
+        }
+
+        let full = resolve(name)
+        let fullWidth = full.measure(in: unbounded).width
+        if fullWidth <= width { return full }
+        guard fullWidth > 0 else { return nil }
+
+        // Estimate from the average character width rather than removing one
+        // character at a time: a per-character loop would resolve text dozens
+        // of times per label, every frame.
+        let characters = Array(name)
+        var count = min(
+            characters.count - 1,
+            max(1, Int(Double(characters.count) * width / fullWidth) - 1)
+        )
+        for _ in 0..<6 {
+            guard count >= 1 else { return nil }
+            let candidate = resolve(String(characters[0..<count]) + "…")
+            if candidate.measure(in: unbounded).width <= width { return candidate }
+            count -= max(1, count / 8)
+        }
+        return nil
     }
 
     private func annularSector(
@@ -288,11 +550,21 @@ struct SunburstView: View {
             model.goUp()
             return
         }
+        // Outside the disc is not a miss, it is not a target at all. Clearing
+        // the selection there meant clicking the empty corners of the view
+        // silently undid what the user had picked.
+        guard distance <= metrics.outerRadius else { return }
+
         guard let arc = SunburstLayout.hitTest(
             arcs: arcs, point: relative,
             innerRadius: metrics.innerRadius, ringWidth: metrics.ringWidth
-        ), let node = arc.node else {
+        ) else {
             model.selection = []
+            return
+        }
+        guard let node = arc.node else {
+            // The one slice that hides its contents now says what it hides.
+            if !arc.mergedNodes.isEmpty { othersArc = arc }
             return
         }
         model.activate(node)
@@ -319,19 +591,24 @@ struct SunburstView: View {
         let center: CGPoint
         let innerRadius: Double
         let outerRadius: Double
+        /// Rings the tree actually fills. Dividing by a constant instead left
+        /// three quarters of the disc empty for a folder one level deep.
+        let rings: Int
 
-        init(size: CGSize) {
+        init(size: CGSize, rings: Int) {
             center = CGPoint(x: size.width / 2, y: size.height / 2)
-            outerRadius = max(40, min(size.width, size.height) / 2 - 14)
+            // The margin has to hold the drop shadow, not just the disc: at 14
+            // the shadow was clipped flat by the bottom of the canvas, which
+            // read as the status bar cutting it off.
+            outerRadius = max(40, min(size.width, size.height) / 2 - 26)
             innerRadius = outerRadius * 0.23
+            self.rings = max(1, rings)
         }
 
-        var ringWidth: Double {
-            (outerRadius - innerRadius) / Double(SunburstView.maxRings)
-        }
+        var ringWidth: Double { (outerRadius - innerRadius) / Double(rings) }
 
         func radius(ring: Int, fraction: Double) -> Double {
-            innerRadius + (Double(ring - 1) / Double(SunburstView.maxRings) + fraction)
+            innerRadius + (Double(ring - 1) / Double(rings) + fraction / Double(rings))
                 * (outerRadius - innerRadius)
         }
 
@@ -339,6 +616,72 @@ struct SunburstView: View {
             CGPoint(x: point.x - center.x, y: point.y - center.y)
         }
     }
+}
+
+// MARK: - Others
+
+/// What an aggregated slice stands for.
+///
+/// The merge threshold keeps the chart readable, but it is also the only place
+/// where the picture stops telling the truth about what is there. This is the
+/// way back in.
+private struct OthersSheet: View {
+    let model: ScanModel
+    let arc: Arc
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(arc.mergedCount) éléments trop petits pour être dessinés")
+                        .font(.headline)
+                    Text("\(Format.bytes(arc.size)) au total")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(16)
+
+            Divider()
+
+            List(rows, id: \.self) { node in
+                if let store = model.store {
+                    HStack(spacing: 8) {
+                        Image(systemName: store.isDirectory(node) ? "folder" : "doc")
+                            .foregroundStyle(.secondary)
+                        Text(store.name(of: node))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 12)
+                        Text(Format.bytes(model.size(of: node)))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(.rect)
+                    .onTapGesture {
+                        model.activate(node)
+                        onDismiss()
+                    }
+                }
+            }
+            .listStyle(.inset)
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Fermer", action: onDismiss)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(width: 420, height: 380)
+    }
+
+    /// Already sorted largest first by the layout; capped because an "others"
+    /// slice can stand for tens of thousands of entries and no one scrolls that.
+    private var rows: [Int32] { Array(arc.mergedNodes.prefix(200)) }
 }
 
 // MARK: - Overlays

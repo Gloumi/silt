@@ -91,13 +91,21 @@ struct OKLab {
 enum Palette {
     /// Validated categorical order: blue, orange, aqua, yellow, magenta, green,
     /// violet, red.
+    ///
+    /// Chroma raised by 12 % over the first version, which read as muted on a
+    /// dark surface. Done in OKLab at constant lightness, and **gamut-mapped**:
+    /// where sRGB cannot hold the extra chroma at that lightness the boost is
+    /// reduced instead of letting the conversion clip. Clipping is not neutral —
+    /// it drags lightness with it, and the naive version pushed the dark yellow
+    /// out of its validated band by exactly that mechanism. Aqua and green
+    /// therefore gained little; they were already at the edge of the gamut.
     private static let lightHexes: [UInt32] = [
-        0x2A78D6, 0xEB6834, 0x1BAF7A, 0xEDA100,
-        0xE87BA4, 0x008300, 0x4A3AA7, 0xE34948,
+        0x1676E1, 0xF45F1C, 0x00B079, 0xEDA100,
+        0xEF75A4, 0x008300, 0x4B34B1, 0xEC3A3E,
     ]
     private static let darkHexes: [UInt32] = [
-        0x3987E5, 0xD95926, 0x199E70, 0xC98500,
-        0xD55181, 0x008300, 0x9085E9, 0xE66767,
+        0x2986F0, 0xE15004, 0x009F6F, 0xC98500,
+        0xDD4680, 0x008300, 0x9082F3, 0xEE5F61,
     ]
 
     static let slotCount = 8
@@ -136,7 +144,7 @@ enum Palette {
     /// way sunbursts end up looking washed out; here the outer rings stay
     /// recognisably the same colour as the branch they belong to.
     private static let lightnessPerRing = 0.038
-    private static let chromaLossPerRing = 0.05
+    private static let chromaLossPerRing = 0.03
 
     /// Colour for a slice in `slot`'s branch at `ring` rings from the centre.
     ///

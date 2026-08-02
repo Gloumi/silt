@@ -13,6 +13,10 @@ public struct Arc: Identifiable {
     public var size: Int64
     /// How many siblings an "others" slice stands for.
     public var mergedCount: Int
+    /// The siblings it stands for, largest first. Without these the slice is a
+    /// dead end: it is the one place on the chart where content is hidden, so
+    /// it has to be able to say what it is hiding.
+    public var mergedNodes: [Int32] = []
     /// Rank among its siblings, used to nudge lightness so that neighbours in
     /// the same branch stay distinguishable without inventing a new hue.
     public var siblingIndex: Int
@@ -89,7 +93,7 @@ public enum SunburstLayout {
 
         var angle = startAngle
         var mergedSize: Int64 = 0
-        var mergedCount = 0
+        var merged: [Int32] = []
 
         for (index, child) in children.enumerated() {
             let childSize = size(store, child, useLogicalSize)
@@ -102,7 +106,7 @@ public enum SunburstLayout {
             let childSlot = slot ?? (index < slotCount ? index : -1)
             if sweep < minimumSweep || (ring == 1 && index >= slotCount) {
                 mergedSize += childSize
-                mergedCount += 1
+                merged.append(child)
                 continue
             }
 
@@ -130,7 +134,7 @@ public enum SunburstLayout {
             angle += sweep
         }
 
-        if mergedCount > 0 {
+        if !merged.isEmpty {
             let sweep = availableSweep * Double(mergedSize) / Double(parentSize)
             if sweep > 0.0005 {
                 arcs.append(Arc(
@@ -140,7 +144,8 @@ public enum SunburstLayout {
                     endAngle: angle + sweep,
                     slot: -1,
                     size: mergedSize,
-                    mergedCount: mergedCount,
+                    mergedCount: merged.count,
+                    mergedNodes: merged,
                     siblingIndex: children.count
                 ))
             }
