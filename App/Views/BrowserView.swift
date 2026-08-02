@@ -189,6 +189,22 @@ private struct BreadcrumbBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // The sunburst has its centre to climb out through; the treemap and
+            // the list have nothing, so the way back lives here for all of them.
+            Button {
+                model.goUp()
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 20)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(model.trail.count > 1 ? Color.accentColor : Color.secondary)
+            .disabled(model.trail.count <= 1)
+            .padding(.leading, 10)
+            .help("Remonter d'un niveau")
+
             breadcrumbs
             Spacer(minLength: 8)
             ViewModeSwitcher(model: model)
@@ -220,7 +236,6 @@ private struct BreadcrumbBar: View {
                     .disabled(depth == model.trail.count - 1)
                 }
             }
-            .padding(.leading, 12)
             .padding(.vertical, 7)
         }
         .scrollIndicators(.never)

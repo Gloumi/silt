@@ -114,6 +114,31 @@ final class ScanModel {
 
     var currentNode: Int32 { trail.last ?? 0 }
 
+    /// What the inspector describes: an explicitly picked item, or failing that
+    /// the directory we are standing in. Since a click now navigates, "where I
+    /// am" is the thing the user most often wants to act on.
+    var inspectedNode: Int32? {
+        if selection.count == 1 { return selection.first }
+        if selection.count > 1 { return nil }
+        return store == nil ? nil : currentNode
+    }
+
+    /// True when the node can be opened. A file cannot, and neither can a
+    /// collapsed directory — those get selected instead.
+    func canEnter(_ node: Int32) -> Bool {
+        guard let store else { return false }
+        return store.isDirectory(node) && store.childCount[Int(node)] > 0
+    }
+
+    /// Single click in a visualisation: open it if we can, otherwise pick it.
+    func activate(_ node: Int32) {
+        if canEnter(node) {
+            enter(node)
+        } else {
+            selection = [node]
+        }
+    }
+
     /// Whatever tree we can show right now — the finished one, or the partial
     /// one still being built.
     var store: NodeStore? { result?.store ?? partialStore }
@@ -295,6 +320,13 @@ final class ScanModel {
 
         for item in report.trashed {
             result?.store.markDeleted(item.node)
+        }
+        // Acting on a folder now means having opened it, so the deleted node is
+        // often the one under our feet. Climb out before it becomes a view of
+        // something that no longer exists.
+        let removed = Set(report.trashed.map(\.node))
+        if let index = trail.firstIndex(where: removed.contains) {
+            trail.removeSubrange(max(1, index)...)
         }
         undoSizes = sizes
         lastDeletion = report.trashed.isEmpty ? nil : report

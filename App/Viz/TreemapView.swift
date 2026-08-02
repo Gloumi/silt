@@ -1,3 +1,4 @@
+import AppKit
 import DiskCore
 import SwiftUI
 
@@ -15,6 +16,10 @@ struct TreemapView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var tiles: [TreemapTile] = []
     @State private var hovered: TreemapTile?
+    /// Last tile the pointer was over, kept after the hover ends: opening a
+    /// context menu can clear the hover first, and the menu would then have no
+    /// target.
+    @State private var menuTarget: Int32?
     @State private var hoverPoint: CGPoint = .zero
     @State private var builtScanID = -1
     @State private var lastSize: CGSize = .zero
@@ -32,18 +37,18 @@ struct TreemapView: View {
                             hovered = TreemapLayout.hitTest(
                                 tiles: tiles, point: location
                             )
+                            if let node = hovered?.node { menuTarget = node }
                         case .ended:
                             hovered = nil
                         }
                     }
                     .gesture(
-                        SpatialTapGesture(count: 2)
-                            .onEnded { handleTap(at: $0.location, drill: true) }
-                    )
-                    .gesture(
                         SpatialTapGesture()
-                            .onEnded { handleTap(at: $0.location, drill: false) }
+                            .onEnded { handleTap(at: $0.location) }
                     )
+                    .contextMenu {
+                        SliceMenu(model: model, node: menuTarget)
+                    }
 
                 if let hovered, let lines = tooltipText(for: hovered) {
                     Tooltip(lines: lines)
@@ -79,6 +84,7 @@ struct TreemapView: View {
             useLogicalSize: model.useLogicalSize
         )
         hovered = nil
+        menuTarget = nil
     }
 
     // MARK: - Drawing
@@ -141,18 +147,14 @@ struct TreemapView: View {
 
     // MARK: - Interaction
 
-    private func handleTap(at location: CGPoint, drill: Bool) {
+    private func handleTap(at location: CGPoint) {
         guard let tile = TreemapLayout.hitTest(tiles: tiles, point: location),
               let node = tile.node
         else {
             model.selection = []
             return
         }
-        if drill {
-            model.enter(node)
-        } else {
-            model.selection = [node]
-        }
+        model.activate(node)
     }
 
     private func tooltipText(for tile: TreemapTile) -> [String]? {
@@ -165,6 +167,38 @@ struct TreemapView: View {
             "\(Format.bytes(tile.size)) · "
                 + "\(Format.count(Int(store.fileCount[Int(node)]))) fichiers",
         ]
+    }
+}
+
+/// Right-click actions on whatever the pointer is over.
+///
+/// Right-click follows hover on macOS, so the hovered slice is the one the menu
+/// belongs to. This is what preserves acting on a sibling without navigating
+/// into it, now that a plain click opens.
+struct SliceMenu: View {
+    let model: ScanModel
+    let node: Int32?
+
+    var body: some View {
+        if let node, let store = model.store {
+            let path = store.path(of: node)
+            Button("Ouvrir") { model.enter(node) }
+                .disabled(!model.canEnter(node))
+            Button("Afficher dans le Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    [URL(fileURLWithPath: path)]
+                )
+            }
+            Divider()
+            Button("Mettre à la corbeille", role: .destructive) {
+                model.selection = [node]
+                model.requestDeletion()
+            }
+            .disabled(DenyList.verdict(for: path).isForbidden)
+        } else {
+            Button("Remonter d'un niveau") { model.goUp() }
+                .disabled(model.trail.count <= 1)
+        }
     }
 }
 

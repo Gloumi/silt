@@ -8,23 +8,20 @@ struct InspectorView: View {
 
     var body: some View {
         Group {
-            if let store = model.store, let node = singleSelection {
-                Details(model: model, store: store, node: node)
-            } else if model.selection.count > 1 {
+            if model.selection.count > 1 {
                 MultipleSelection(model: model)
+            } else if let store = model.store, let node = model.inspectedNode {
+                Details(model: model, store: store, node: node)
             } else {
                 ContentUnavailableView(
-                    "Aucune sélection", systemImage: "sidebar.right",
-                    description: Text("Sélectionnez un élément pour voir son détail.")
+                    "Aucun scan", systemImage: "sidebar.right",
+                    description: Text("Analysez un dossier pour voir son détail.")
                 )
             }
         }
         .frame(minWidth: 240)
     }
 
-    private var singleSelection: Int32? {
-        model.selection.count == 1 ? model.selection.first : nil
-    }
 }
 
 // MARK: - Single item

@@ -15,6 +15,10 @@ struct SunburstView: View {
     /// within one store, so geometry from a previous scan must never be reused.
     @State private var builtScanID = -1
     @State private var hovered: Arc?
+    /// Last slice the pointer was over, kept after the hover ends: opening a
+    /// context menu can clear the hover first, and the menu would then have no
+    /// target.
+    @State private var menuTarget: Int32?
     @State private var hoverPoint: CGPoint = .zero
 
     private var isDark: Bool { colorScheme == .dark }
@@ -37,25 +41,25 @@ struct SunburstView: View {
                             innerRadius: metrics.innerRadius,
                             ringWidth: metrics.ringWidth
                         )
+                        if let node = hovered?.node { menuTarget = node }
                     case .ended:
                         hovered = nil
                     }
                 }
-                // Single click selects (feeding the inspector), double click
-                // drills in. Without the first, the rings would be the only
-                // view from which nothing can be inspected or deleted.
-                .gesture(
-                    SpatialTapGesture(count: 2)
-                        .onEnded { event in
-                            handleTap(at: event.location, metrics: metrics, drill: true)
-                        }
-                )
+                // One click opens. Anything that cannot be opened — a file, a
+                // collapsed folder — is selected instead, so a click is never
+                // inert.
                 .gesture(
                     SpatialTapGesture()
                         .onEnded { event in
-                            handleTap(at: event.location, metrics: metrics, drill: false)
+                            handleTap(at: event.location, metrics: metrics)
                         }
                 )
+                // Acting on a child without entering it: the one thing
+                // click-to-open would otherwise have cost.
+                .contextMenu {
+                    SliceMenu(model: model, node: menuTarget)
+                }
 
                 CenterLabel(model: model, hovered: hovered)
                     .frame(width: metrics.innerRadius * 1.7)
@@ -277,7 +281,7 @@ struct SunburstView: View {
 
     // MARK: - Interaction
 
-    private func handleTap(at location: CGPoint, metrics: Metrics, drill: Bool) {
+    private func handleTap(at location: CGPoint, metrics: Metrics) {
         let relative = metrics.relative(location)
         let distance = (relative.x * relative.x + relative.y * relative.y).squareRoot()
         if distance <= metrics.innerRadius {
@@ -291,11 +295,7 @@ struct SunburstView: View {
             model.selection = []
             return
         }
-        if drill {
-            model.enter(node)
-        } else {
-            model.selection = [node]
-        }
+        model.activate(node)
     }
 
     private func tooltipText(for arc: Arc) -> [String]? {
