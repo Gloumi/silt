@@ -73,6 +73,15 @@ final class ScanModel {
     /// this changes.
     private(set) var scanID = 0
 
+    /// Bumped every time the tree's contents change — a scan snapshot, the
+    /// final result, a deletion, an undo.
+    ///
+    /// The visualisations used to key off `rows.count`, which only moves when
+    /// the *number* of children changes. A home folder settles on its twenty-odd
+    /// entries within the first second while their sizes keep growing for ten
+    /// more, so the rings froze almost immediately and only caught up at the end.
+    private(set) var treeVersion = 0
+
     private(set) var phase: Phase = .idle
     /// Held separately from `phase` rather than inside it: deletion mutates the
     /// tree in place, and an enum payload is a poor place to mutate.
@@ -152,6 +161,11 @@ final class ScanModel {
     private(set) var rootPath: String?
     private(set) var scannedAt: Date?
 
+    /// What the sidebar points at, which is not the same as what has been
+    /// scanned: the app opens with a volume highlighted and waits to be told to
+    /// start, rather than seizing the disk on launch.
+    var selectedRoot: String?
+
     private struct CachedScan {
         let result: ScanResult
         let date: Date
@@ -211,6 +225,17 @@ final class ScanModel {
     /// `force` is what the refresh button sends: re-tapping a volume in the
     /// sidebar should be free, but asking for fresh numbers has to mean it.
     func scan(path: String, force: Bool = false) {
+        // Asking for the root you are already on is not a request to redo the
+        // work. The cache cannot help here: while a scan is in flight there is
+        // nothing cached yet, so every extra tap used to cancel it and start
+        // again from zero — the more impatient the user, the less progress.
+        // Once it has finished, re-running it would only flash the same tree.
+        // Keeps the sidebar highlight honest when a scan starts from somewhere
+        // else — the Open panel, a drag onto the window.
+        selectedRoot = path
+
+        if !force, rootPath == path, isScanning || result != nil { return }
+
         scanTask?.cancel()
         stashCurrentScan()
 
@@ -409,6 +434,7 @@ final class ScanModel {
     }
 
     private func refreshRows() {
+        treeVersion += 1
         guard let store else { rows = []; return }
         rows = Signposts.measure("refreshRows") {
             store.childrenSortedBySize(of: currentNode, useLogical: useLogicalSize)

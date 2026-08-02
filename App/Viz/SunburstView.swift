@@ -101,8 +101,10 @@ struct SunburstView: View {
         .onChange(of: model.scanID, initial: true) { rebuild(animated: false) }
         .onChange(of: model.currentNode) { rebuild(animated: true) }
         .onChange(of: model.useLogicalSize) { rebuild(animated: false) }
-        // Redraw as the scan fills the tree in.
-        .onChange(of: model.rows.count) { rebuild(animated: false) }
+        // Redraw as the scan fills the tree in. Keyed on the tree's version and
+        // not on the number of rows: a folder reaches its final child count
+        // almost immediately while the sizes behind them keep growing.
+        .onChange(of: model.treeVersion) { rebuild(animated: false) }
         .sheet(item: $othersArc) { arc in
             OthersSheet(model: model, arc: arc) { othersArc = nil }
         }

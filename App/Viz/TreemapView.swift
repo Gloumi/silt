@@ -66,7 +66,7 @@ struct TreemapView: View {
             .onChange(of: model.scanID) { rebuild(in: lastSize) }
             .onChange(of: model.currentNode) { rebuild(in: lastSize) }
             .onChange(of: model.useLogicalSize) { rebuild(in: lastSize) }
-            .onChange(of: model.rows.count) { rebuild(in: lastSize) }
+            .onChange(of: model.treeVersion) { rebuild(in: lastSize) }
         }
     }
 

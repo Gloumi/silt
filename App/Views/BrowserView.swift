@@ -9,26 +9,33 @@ struct BrowserView: View {
 
     var body: some View {
         Group {
-            switch model.phase {
-            case .idle:
-                EmptyStateView()
-            case .scanning(let progress):
-                if model.store != nil {
+            // Keyed on whether there is a tree, not on the phase.
+            //
+            // Two branches of a switch are two structural identities to
+            // SwiftUI: building `loadedContent` once under `.scanning` and
+            // again under `.loaded` tore the whole subtree down at the end of
+            // every scan. The visualisation lost its @State, blanked, and came
+            // back a frame later — which is exactly what it looked like.
+            if model.store != nil {
+                loadedContent.overlay(alignment: .top) {
                     // The tree is already worth looking at — show it growing,
                     // with the counters demoted to a strip.
-                    loadedContent.overlay(alignment: .top) {
+                    if case .scanning(let progress) = model.phase {
                         ScanStrip(progress: progress) { model.cancel() }
                     }
-                } else {
-                    ScanningView(progress: progress) { model.cancel() }
                 }
-            case .failed(let message):
-                ContentUnavailableView(
-                    "Scan impossible", systemImage: "exclamationmark.triangle",
-                    description: Text(message)
-                )
-            case .loaded:
-                loadedContent
+            } else {
+                switch model.phase {
+                case .scanning(let progress):
+                    ScanningView(progress: progress) { model.cancel() }
+                case .failed(let message):
+                    ContentUnavailableView(
+                        "Scan impossible", systemImage: "exclamationmark.triangle",
+                        description: Text(message)
+                    )
+                case .idle, .loaded:
+                    EmptyStateView(model: model)
+                }
             }
         }
         .frame(minWidth: 480, minHeight: 360)
@@ -41,16 +48,23 @@ struct BrowserView: View {
             VStack(spacing: 0) {
                 BreadcrumbBar(model: model, store: store)
                 Divider()
-                switch model.presentation {
-                case .sunburst:
-                    SunburstView(model: model).padding(8)
-                case .treemap:
-                    TreemapView(model: model).padding(6)
-                case .list:
-                    entryList(store: store, parentSize: parentSize)
-                case .cleanup:
-                    CleanupView(model: model)
+                Group {
+                    switch model.presentation {
+                    case .sunburst:
+                        SunburstView(model: model).padding(8)
+                    case .treemap:
+                        TreemapView(model: model).padding(6)
+                    case .list:
+                        entryList(store: store, parentSize: parentSize)
+                    case .cleanup:
+                        CleanupView(model: model)
+                    }
                 }
+                // The middle takes whatever is left, whatever is in it. Without
+                // this an empty state — "Rien à récupérer", a filter matching
+                // nothing — reports its intrinsic height, the stack shrinks to
+                // fit and both bars drift into the middle of the window.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 StatusBar(model: model, store: store)
             }
         }
@@ -302,13 +316,57 @@ private struct StatusBar: View {
 
 // MARK: - States
 
+/// Before anything has been scanned.
+///
+/// A volume is already highlighted in the sidebar, but nothing has been read:
+/// walking a whole disk takes minutes, and that is a decision to hand to the
+/// user rather than to make for them at launch.
 private struct EmptyStateView: View {
+    let model: ScanModel
+
     var body: some View {
         ContentUnavailableView {
-            Label("Aucun scan", systemImage: "chart.pie")
+            Label("Prêt à analyser", systemImage: "chart.pie")
         } description: {
-            Text("Choisissez un volume ou un emplacement dans la barre latérale.")
+            if let target {
+                Text("Silt va parcourir \(target) et vous montrer où part la place.")
+            } else {
+                Text("Choisissez un volume ou un emplacement dans la barre latérale.")
+            }
+        } actions: {
+            if let root = model.selectedRoot {
+                Button {
+                    model.scan(path: root, force: true)
+                } label: {
+                    Label("Démarrer l'analyse", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+            }
         }
+    }
+
+    /// What the button promises to scan, named the way the user would name it.
+    ///
+    /// A volume root has no useful last path component — "/" is the whole boot
+    /// disk and reads as nothing at all — so volumes are asked for their name.
+    private var target: String? {
+        guard let root = model.selectedRoot else { return nil }
+        if root == NSHomeDirectory() { return "votre dossier Départ" }
+
+        let url = URL(fileURLWithPath: root)
+        if let values = try? url.resourceValues(
+            forKeys: [.volumeNameKey, .volumeIsRootFileSystemKey]
+        ), let name = values.volumeName,
+           root == "/" || values.volumeIsRootFileSystem == true
+            || url.pathComponents.count <= 3 && root.hasPrefix("/Volumes/") {
+            return "« \(name) »"
+        }
+
+        let component = (root as NSString).lastPathComponent
+        return component.isEmpty || component == "/"
+            ? "ce volume" : "« \(component) »"
     }
 }
 
