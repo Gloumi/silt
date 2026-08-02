@@ -8,3 +8,4 @@ xcuserdata/
 # Généré par xcodegen à partir de project.yml — ne pas versionner.
 *.xcodeproj
 App/Info.plist
+build/

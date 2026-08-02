@@ -1,0 +1,103 @@
+name: Release
+
+# Tag a version to publish it:
+#   git tag v0.1.0 && git push --tags
+#
+# Signing and notarisation only happen if the secrets below are present, so a
+# fork can build and release unsigned artefacts without any Apple account.
+#
+# Secrets, when you have a Developer ID:
+#   MACOS_CERTIFICATE        base64 of the .p12 export
+#   MACOS_CERTIFICATE_PWD    its password
+#   KEYCHAIN_PASSWORD        any throwaway string
+#   NOTARY_APPLE_ID          the Apple ID
+#   NOTARY_TEAM_ID           the team identifier
+#   NOTARY_PASSWORD          an app-specific password
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release.sh derives the version from tags
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.app || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Run engine tests
+        run: cd DiskCore && swift test --skip firmlinks
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
+      - name: Store notarisation credentials
+        if: env.NOTARY_APPLE_ID != ''
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials strata-notary \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD"
+
+      - name: Build and package
+        run: |
+          if [ -n "${{ secrets.NOTARY_APPLE_ID }}" ]; then
+            ./Scripts/release.sh --notarize
+          else
+            ./Scripts/release.sh
+          fi
+
+      - name: Checksum
+        id: checksum
+        run: |
+          DMG=$(ls build/*.dmg)
+          echo "path=$DMG" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.checksum.outputs.path }}
+          generate_release_notes: true
+          body: |
+            ### Installation
+
+            ```sh
+            brew install --cask strata
+            ```
+
+            Ou téléchargez le DMG ci-dessous.
+
+            `sha256: ${{ steps.checksum.outputs.sha256 }}`
+
+            > Strata a besoin de l'**accès complet au disque** pour analyser
+            > l'intégralité de votre Mac. L'app vous guide au premier lancement.

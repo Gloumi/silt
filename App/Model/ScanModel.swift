@@ -90,6 +90,9 @@ final class ScanModel {
 
     /// File currently shown in Quick Look, if any.
     var previewURL: URL?
+    /// Full Disk Access explainer, shown once and reachable from the Help menu
+    /// and from the warning in the status bar.
+    var showsWelcome = !Preferences.shared.hasSeenWelcome
 
     /// Set while the confirmation sheet is up.
     var deletionPlan: DeletionPlan? {
@@ -109,8 +112,12 @@ final class ScanModel {
     private var undoSizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
 
     /// Report sizes as logical bytes rather than bytes on disk.
-    var useLogicalSize = false {
-        didSet { if useLogicalSize != oldValue { refreshRows() } }
+    var useLogicalSize = Preferences.shared.useLogicalSize {
+        didSet {
+            guard useLogicalSize != oldValue else { return }
+            Preferences.shared.useLogicalSize = useLogicalSize
+            refreshRows()
+        }
     }
 
     private var scanTask: Task<Void, Never>?
@@ -181,7 +188,8 @@ final class ScanModel {
         // already on the main actor; only the engine's own work is off it.
         scanTask = Task { [weak self] in
             let scanned = await ScanEngine.scan(
-                root: path, progress: onProgress, snapshot: onSnapshot
+                root: path, options: Preferences.shared.scanOptions(),
+                progress: onProgress, snapshot: onSnapshot
             )
             guard let self, !Task.isCancelled else { return }
             if scanned.store.isEmpty {

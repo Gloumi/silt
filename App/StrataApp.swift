@@ -11,10 +11,17 @@ struct StrataApp: App {
             ContentView(model: model)
         }
         .windowToolbarStyle(.unified(showsTitle: false))
+
+        Settings { SettingsView() }
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Analyser un dossier…") { chooseFolder() }
                     .keyboardShortcut("o")
+            }
+            CommandGroup(replacing: .help) {
+                Button("Accès complet au disque…") { model.showsWelcome = true }
+                Divider()
+                Link("Code source", destination: URL(string: "https://github.com/")!)
             }
             CommandGroup(after: .toolbar) {
                 Button("Remonter d'un niveau") { model.goUp() }
@@ -60,6 +67,14 @@ struct ContentView: View {
         .inspector(isPresented: $showsInspector) {
             InspectorView(model: model)
                 .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
+        }
+        .sheet(isPresented: Bindable(model).showsWelcome) {
+            WelcomeSheet(
+                unreadableCount: model.result?.unreadablePaths.count ?? 0
+            ) {
+                model.showsWelcome = false
+                Preferences.shared.hasSeenWelcome = true
+            }
         }
         .sheet(item: Bindable(model).previewURL) { url in
             QuickLookSheet(url: url) { model.previewURL = nil }

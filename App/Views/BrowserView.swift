@@ -254,12 +254,17 @@ private struct StatusBar: View {
             Text("\(Format.count(Int(store.fileCount[Int(model.currentNode)]))) fichiers au total")
             Spacer()
             if let result = model.result, !result.unreadablePaths.isEmpty {
-                Label(
-                    "\(result.unreadablePaths.count) dossiers illisibles",
-                    systemImage: "lock"
-                )
-                .foregroundStyle(.orange)
-                .help("Activez l'accès complet au disque pour les inclure.")
+                Button {
+                    model.showsWelcome = true
+                } label: {
+                    Label(
+                        "\(result.unreadablePaths.count) dossiers illisibles",
+                        systemImage: "lock"
+                    )
+                    .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+                .help("Ces dossiers manquent aux totaux. Cliquez pour savoir comment y donner accès.")
             }
             Text(Format.bytes(model.size(of: model.currentNode)))
                 .monospacedDigit()
