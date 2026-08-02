@@ -24,6 +24,10 @@ struct SiltApp: App {
                 Link("Code source", destination: URL(string: "https://github.com/")!)
             }
             CommandGroup(after: .toolbar) {
+                // ⌘R is already the inspector's "Afficher dans le Finder".
+                Button("Actualiser l'analyse") { model.rescan() }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(!model.canRescan)
                 Button("Remonter d'un niveau") { model.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
                     .disabled(model.trail.count <= 1)

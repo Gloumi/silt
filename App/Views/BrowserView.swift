@@ -207,6 +207,22 @@ private struct BreadcrumbBar: View {
 
             breadcrumbs
             Spacer(minLength: 8)
+
+            // Re-tapping a volume in the sidebar now reuses the tree in memory,
+            // so refreshing has to be something the user asks for explicitly.
+            Button {
+                model.rescan()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(model.canRescan ? Color.accentColor : Color.secondary)
+            .disabled(!model.canRescan)
+            .help("Actualiser l'analyse")
+
             ViewModeSwitcher(model: model)
                 .padding(.trailing, 12)
         }
@@ -252,6 +268,12 @@ private struct StatusBar: View {
             Text("\(Format.count(model.rows.count)) éléments")
             Text("·")
             Text("\(Format.count(Int(store.fileCount[Int(model.currentNode)]))) fichiers au total")
+            if let scannedAt = model.scannedAt {
+                Text("·")
+                // Says how stale the numbers are, which matters now that a tree
+                // can come straight back from memory.
+                Text("analysé \(Format.age(since: scannedAt))")
+            }
             Spacer()
             if let result = model.result, !result.unreadablePaths.isEmpty {
                 Button {

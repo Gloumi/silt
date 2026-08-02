@@ -83,10 +83,19 @@ final class ScanModel {
     /// every view update would be felt.
     private(set) var rows: [Int32] = []
 
-    /// Recoverable space found by the rule engine, recomputed when the tree
-    /// changes. Cheap enough (tens of milliseconds) to redo rather than patch.
+    /// Recoverable space found by the rule engine.
+    ///
+    /// Computed lazily, the first time the Cleanup view asks for it, and never
+    /// as part of finishing a scan: it walks the whole tree, and the end of a
+    /// scan is precisely the moment the user is waiting for the first picture.
     private(set) var junkReport: JunkReport?
+    private(set) var junkPhase: JunkPhase = .idle
     var junkSelection: Set<Int32> = []
+    private var junkTask: Task<Void, Never>?
+
+    enum JunkPhase {
+        case idle, running, ready
+    }
 
     /// File currently shown in Quick Look, if any.
     var previewURL: URL?
@@ -121,6 +130,26 @@ final class ScanModel {
     }
 
     private var scanTask: Task<Void, Never>?
+
+    /// Root of the scan on screen, and when it was taken.
+    private(set) var rootPath: String?
+    private(set) var scannedAt: Date?
+
+    private struct CachedScan {
+        let result: ScanResult
+        let date: Date
+    }
+
+    /// Roots visited earlier this session, oldest first.
+    ///
+    /// The tree on screen is deliberately *not* in here: deletions mutate
+    /// `result` in place, so a second copy would quietly go stale and start
+    /// showing files that no longer exist. A root enters the cache only when we
+    /// leave it, which also means there is exactly one copy of each tree.
+    private var cache: [(path: String, scan: CachedScan)] = []
+    /// Roughly 60 MB per million files, so this is a memory decision more than
+    /// anything else.
+    private static let cacheLimit = 3
 
     var currentNode: Int32 { trail.last ?? 0 }
 
@@ -160,18 +189,36 @@ final class ScanModel {
 
     // MARK: - Scanning
 
-    func scan(path: String) {
+    /// Scans a root, or brings back the tree if it is still in memory.
+    ///
+    /// `force` is what the refresh button sends: re-tapping a volume in the
+    /// sidebar should be free, but asking for fresh numbers has to mean it.
+    func scan(path: String, force: Bool = false) {
         scanTask?.cancel()
+        stashCurrentScan()
+
+        if !force, let index = cache.firstIndex(where: { $0.path == path }) {
+            restore(cache.remove(at: index), path: path)
+            return
+        }
+        cache.removeAll { $0.path == path }
+
         trail = [0]
         rows = []
         selection = []
         result = nil
         partialStore = nil
+        junkTask?.cancel()
         junkReport = nil
+        junkPhase = .idle
         junkSelection = []
         lastDeletion = nil
         deletionMessage = nil
         scanID += 1
+        rootPath = path
+        // Only stamped on success, which is also what keeps a failed or
+        // cancelled scan out of the cache.
+        scannedAt = nil
         phase = .scanning(ScanProgress())
 
         // Built outside the scan task so the engine's callbacks hold their own
@@ -197,14 +244,57 @@ final class ScanModel {
             } else {
                 result = scanned
                 partialStore = nil
+                scannedAt = Date()
                 phase = .loaded
-                refreshJunk()
                 // Deliberately not a new scanID: indices are append-only within
                 // a scan, so the final tree agrees with the last snapshot and
                 // the view settles into it rather than flashing.
                 refreshRows()
             }
         }
+    }
+
+    /// Re-scans the current root from disk, discarding what is on screen.
+    func rescan() {
+        guard let rootPath else { return }
+        scan(path: rootPath, force: true)
+    }
+
+    var canRescan: Bool { rootPath != nil && !isScanning }
+
+    /// Parks the finished tree we are leaving so returning to it is instant.
+    ///
+    /// A cancelled scan is never cached: it is a partial tree, and silently
+    /// serving it later as if it were complete would under-report.
+    private func stashCurrentScan() {
+        guard let result, let rootPath, let scannedAt,
+              !result.wasCancelled
+        else { return }
+        cache.removeAll { $0.path == rootPath }
+        cache.append((rootPath, CachedScan(result: result, date: scannedAt)))
+        if cache.count > Self.cacheLimit {
+            cache.removeFirst(cache.count - Self.cacheLimit)
+        }
+    }
+
+    private func restore(_ entry: (path: String, scan: CachedScan), path: String) {
+        scanTask = nil
+        junkTask?.cancel()
+        trail = [0]
+        rows = []
+        selection = []
+        partialStore = nil
+        junkReport = nil
+        junkPhase = .idle
+        junkSelection = []
+        lastDeletion = nil
+        deletionMessage = nil
+        scanID += 1
+        result = entry.scan.result
+        rootPath = path
+        scannedAt = entry.scan.date
+        phase = .loaded
+        refreshRows()
     }
 
     func cancel() {
@@ -274,9 +364,9 @@ final class ScanModel {
 
     private func refreshRows() {
         guard let store else { rows = []; return }
-        rows = store.childrenSortedBySize(
-            of: currentNode, useLogical: useLogicalSize
-        )
+        rows = Signposts.measure("refreshRows") {
+            store.childrenSortedBySize(of: currentNode, useLogical: useLogicalSize)
+        }
         selection = selection.filter { !store.flags[Int($0)].contains(.deleted) }
     }
 
@@ -345,7 +435,7 @@ final class ScanModel {
         selection = []
         junkSelection = []
         refreshRows()
-        refreshJunk()
+        refreshJunkIfShown()
     }
 
     func undoLastDeletion() async {
@@ -368,7 +458,7 @@ final class ScanModel {
             ? "Restauration effectuée."
             : "\(failures.count) élément(s) n'ont pas pu être restaurés."
         refreshRows()
-        refreshJunk()
+        refreshJunkIfShown()
     }
 
     func dismissDeletionMessage() { deletionMessage = nil }
@@ -386,11 +476,41 @@ final class ScanModel {
 
     // MARK: - Cleanup
 
-    private func refreshJunk() {
-        guard let store else { junkReport = nil; return }
-        junkReport = JunkScanner.scan(store: store)
-        let live = Set(junkReport?.findings.map(\.node) ?? [])
-        junkSelection = junkSelection.intersection(live)
+    /// Called by the Cleanup view when it appears. Computing the report is the
+    /// view's own cost to pay, not the scan's.
+    func ensureJunkReport() {
+        guard junkReport == nil, junkPhase != .running else { return }
+        rescanJunk()
+    }
+
+    /// After a deletion or an undo. Only worth redoing if a report is already on
+    /// screen — otherwise the next visit to the Cleanup view will build it.
+    private func refreshJunkIfShown() {
+        guard junkReport != nil else { return }
+        rescanJunk()
+    }
+
+    /// Runs the rule engine off the main actor.
+    ///
+    /// `NodeStore` is a struct of arrays and `Sendable`, so handing it to a
+    /// detached task copies nothing while nobody mutates it.
+    private func rescanJunk() {
+        guard let store else {
+            junkReport = nil
+            junkPhase = .idle
+            return
+        }
+        junkTask?.cancel()
+        junkPhase = .running
+        junkTask = Task { [weak self] in
+            let report = await Task.detached {
+                Signposts.measure("junkScan") { JunkScanner.scan(store: store) }
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            junkReport = report
+            junkPhase = .ready
+            junkSelection = junkSelection.intersection(Set(report.findings.map(\.node)))
+        }
     }
 
     func toggleJunk(_ node: Int32) {

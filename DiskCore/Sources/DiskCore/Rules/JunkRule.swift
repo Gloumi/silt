@@ -51,7 +51,14 @@ public struct JunkRuleSet: Codable, Sendable {
     public var rules: [JunkRule]
 
     /// The rule set shipped with the app.
-    public static func bundled() -> JunkRuleSet {
+    ///
+    /// Memoised. This used to re-read and re-decode the bundle on *every* junk
+    /// scan — and the junk scan itself ran after every scan, every deletion and
+    /// every undo. A `static let` is lazy and thread-safe in Swift, so the file
+    /// is parsed once per launch and only if something actually asks for it.
+    public static func bundled() -> JunkRuleSet { shared }
+
+    private static let shared: JunkRuleSet = {
         guard let url = Bundle.module.url(forResource: "rules", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode(JunkRuleSet.self, from: data)
@@ -60,7 +67,7 @@ public struct JunkRuleSet: Codable, Sendable {
             return JunkRuleSet(categories: [], rules: [])
         }
         return decoded
-    }
+    }()
 }
 
 public struct JunkFinding: Sendable, Identifiable {

@@ -21,6 +21,13 @@ struct CleanupView: View {
                 } else {
                     content(report)
                 }
+            } else if model.junkPhase == .running {
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.large)
+                    Text("Recherche des fichiers récupérables…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView(
                     "Analyse en attente", systemImage: "wand.and.sparkles",
@@ -28,6 +35,10 @@ struct CleanupView: View {
                 )
             }
         }
+        // The rule engine runs when this view is first shown rather than at the
+        // end of every scan — it walks the whole tree, and that used to block
+        // the main actor exactly when the visualisation was trying to appear.
+        .task(id: model.scanID) { model.ensureJunkReport() }
     }
 
     private func content(_ report: JunkReport) -> some View {

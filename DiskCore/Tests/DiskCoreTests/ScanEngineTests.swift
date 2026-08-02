@@ -134,14 +134,25 @@ struct ScanEngineTests {
     @Test("Sparse files report on-disk size, not logical size")
     func sparseFileUsesAllocatedSize() async throws {
         let fixture = try Fixture()
+        try fixture.file("dense.bin", bytes: 10_000)
+
+        // `ftruncate` alone, deliberately: the textbook recipe of seeking far
+        // out and writing one byte does *not* leave a hole on APFS — measured,
+        // it allocates the whole preceding range (1 000 001 logical bytes came
+        // back as 1 960 blocks, i.e. fully allocated). Extending without ever
+        // writing is what actually produces a hole here.
         let sparse = fixture.root.appendingPathComponent("sparse.bin")
         let fd = open(sparse.path, O_CREAT | O_RDWR, 0o644)
         try #require(fd >= 0)
-        // Seek far out and write one byte: 1 MB logical, a block on disk.
-        _ = lseek(fd, 1_000_000, SEEK_SET)
-        var byte: UInt8 = 1
-        _ = write(fd, &byte, 1)
+        let extended = ftruncate(fd, 1_000_000)
         close(fd)
+        try #require(extended == 0)
+
+        // Guard the premise rather than assert through it: on a filesystem that
+        // refuses holes this test would otherwise fail for the wrong reason.
+        var info = stat()
+        try #require(stat(sparse.path, &info) == 0)
+        try #require(info.st_blocks * 512 < info.st_size)
 
         let result = await ScanEngine.scan(root: fixture.path)
         #expect(result.rootTotalLogical > result.rootTotalAlloc)
