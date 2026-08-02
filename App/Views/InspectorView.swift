@@ -109,6 +109,17 @@ private struct Details: View {
             }
             .keyboardShortcut("r")
 
+            // Only for directories: the rules match folders, so offering this
+            // on a file would always come back empty.
+            if store.isDirectory(node) {
+                Button {
+                    model.cleanFolder(node)
+                } label: {
+                    Label("Nettoyer ce dossier", systemImage: "wand.and.sparkles")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+
             Button(role: .destructive) {
                 model.selection = [node]
                 model.requestDeletion()

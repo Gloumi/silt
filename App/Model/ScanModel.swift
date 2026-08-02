@@ -59,7 +59,14 @@ final class ScanModel {
         var count: Int { requests.count }
     }
 
-    var presentation: Presentation = .sunburst
+    var presentation: Presentation = .sunburst {
+        didSet {
+            if presentation != .cleanup { lastBrowsingPresentation = presentation }
+        }
+    }
+    /// Where "show me where this lives" should land. Cleanup is a list of
+    /// findings, not a place in the tree, so it can never be that destination.
+    private var lastBrowsingPresentation: Presentation = .sunburst
 
     /// Increments once per scan. Node indices only mean anything within a
     /// single store, so anything caching geometry by node must drop it when
@@ -92,6 +99,8 @@ final class ScanModel {
     private(set) var junkPhase: JunkPhase = .idle
     var junkSelection: Set<Int32> = []
     private var junkTask: Task<Void, Never>?
+    /// Subtree the cleanup list is confined to, or nil for the whole scan.
+    private(set) var junkScope: Int32?
 
     enum JunkPhase {
         case idle, running, ready
@@ -211,6 +220,7 @@ final class ScanModel {
         junkTask?.cancel()
         junkReport = nil
         junkPhase = .idle
+        junkScope = nil
         junkSelection = []
         lastDeletion = nil
         deletionMessage = nil
@@ -286,6 +296,7 @@ final class ScanModel {
         partialStore = nil
         junkReport = nil
         junkPhase = .idle
+        junkScope = nil
         junkSelection = []
         lastDeletion = nil
         deletionMessage = nil
@@ -343,6 +354,33 @@ final class ScanModel {
         guard trail.count > 1 else { return }
         trail.removeLast()
         selection = []
+        refreshRows()
+    }
+
+    /// Navigates the tree to a node, opening every folder above it.
+    ///
+    /// Used from the cleanup list, where a finding is a path with no relation to
+    /// where the user currently stands.
+    func reveal(_ node: Int32) {
+        guard let store, node >= 0, Int(node) < store.count else { return }
+        var ancestors: [Int32] = []
+        var current = node
+        while current != 0 {
+            ancestors.append(current)
+            current = store.parent[Int(current)]
+        }
+        ancestors.append(0)
+        trail = ancestors.reversed()
+
+        // Standing *inside* a file is not a thing, and neither is standing
+        // inside a folder the scanner collapsed: show it selected in its parent.
+        if canEnter(node) {
+            selection = []
+        } else {
+            trail.removeLast()
+            selection = [node]
+        }
+        presentation = lastBrowsingPresentation
         refreshRows()
     }
 
@@ -483,6 +521,31 @@ final class ScanModel {
         rescanJunk()
     }
 
+    /// "Clean this folder": confines the cleanup list to one subtree and shows
+    /// it. Home-relative rules stop matching outside the scope on their own, so
+    /// asking about a project folder cannot answer with `~/Library/Caches`.
+    func cleanFolder(_ node: Int32) {
+        junkScope = node
+        junkSelection = []
+        junkReport = nil
+        presentation = .cleanup
+        rescanJunk()
+    }
+
+    func clearJunkScope() {
+        guard junkScope != nil else { return }
+        junkScope = nil
+        junkSelection = []
+        junkReport = nil
+        rescanJunk()
+    }
+
+    /// Name of the folder the cleanup list is confined to, for the scope banner.
+    var junkScopePath: String? {
+        guard let junkScope, let store else { return nil }
+        return store.path(of: junkScope)
+    }
+
     /// After a deletion or an undo. Only worth redoing if a report is already on
     /// screen — otherwise the next visit to the Cleanup view will build it.
     private func refreshJunkIfShown() {
@@ -502,9 +565,12 @@ final class ScanModel {
         }
         junkTask?.cancel()
         junkPhase = .running
+        let root = junkScope ?? 0
         junkTask = Task { [weak self] in
             let report = await Task.detached {
-                Signposts.measure("junkScan") { JunkScanner.scan(store: store) }
+                Signposts.measure("junkScan") {
+                    JunkScanner.scan(store: store, root: root)
+                }
             }.value
             guard let self, !Task.isCancelled else { return }
             junkReport = report

@@ -25,6 +25,97 @@ struct JunkScannerTests {
         #expect(Set(ruleSet.rules.map(\.id)).count == ruleSet.rules.count)
     }
 
+    /// File order is precedence, and that is easy to get wrong when adding a
+    /// rule: `generic-cache` swept every child of `~/.cache` from a position
+    /// above `.cache/puppeteer` and `.cache/huggingface`, so neither of those
+    /// could ever fire — Hugging Face's model cache was reported as a generic
+    /// "safe" cache instead of the "caution" it is. This asserts the invariant
+    /// rather than that one case, so the next such rule is caught too.
+    @Test("A rule naming something specific is declared before any sweep above it")
+    func specificPathRulesOutrankSweeps() {
+        let rules = JunkRuleSet.bundled().rules
+
+        for (index, sweep) in rules.enumerated() {
+            guard let swept = sweep.match.childrenOfHomePath else { continue }
+            for specific in rules[(index + 1)...] {
+                guard let target = specific.match.homePath
+                    ?? specific.match.childrenOfHomePath
+                else { continue }
+                #expect(
+                    !target.hasPrefix(swept + "/"),
+                    """
+                    « \(specific.id) » (\(target)) est déclarée après \
+                    « \(sweep.id) », qui balaye \(swept) : elle ne pourra \
+                    jamais s'appliquer.
+                    """
+                )
+            }
+        }
+    }
+
+    @Test("Scoping to a folder reports that folder and nothing beside it")
+    func scopedToSubtree() async throws {
+        let fixture = try Fixture()
+        try fixture.file("projet-a/node_modules/pkg/index.js", bytes: 40_000)
+        try fixture.file("projet-a/src/main.js", bytes: 500)
+        try fixture.file("projet-b/node_modules/pkg/index.js", bytes: 90_000)
+
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let projectA = try #require(
+            store.children(of: 0).first { store.name(of: $0) == "projet-a" }
+        )
+
+        let whole = JunkScanner.scan(store: store)
+        #expect(whole.findings.count == 2)
+
+        let scoped = JunkScanner.scan(store: store, root: projectA)
+        #expect(scoped.findings.count == 1)
+        let found = try #require(scoped.findings.first)
+        #expect(found.path.hasSuffix("projet-a/node_modules"))
+        // The sibling project's 90 kB must not leak into a scoped total.
+        #expect(scoped.totalBytes < whole.totalBytes)
+    }
+
+    /// A folder that is itself junk is a scope, not a finding — otherwise
+    /// "clean this folder" on a `node_modules` would offer to delete the very
+    /// thing you are standing in.
+    @Test("The scoped root is never reported as junk itself")
+    func scopedRootIsNotItsOwnFinding() async throws {
+        let fixture = try Fixture()
+        try fixture.file("node_modules/pkg/index.js", bytes: 40_000)
+
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let modules = try #require(
+            store.children(of: 0).first { store.name(of: $0) == "node_modules" }
+        )
+        #expect(JunkScanner.scan(store: store).findings.count == 1)
+        #expect(JunkScanner.scan(store: store, root: modules).findings.isEmpty)
+    }
+
+    /// The unambiguous-name rules: no sibling or marker file guards them, so
+    /// the only thing that can go wrong is the name never being reached.
+    @Test("Framework and tool caches are matched by name alone")
+    func unambiguousNameRules() async throws {
+        let names = [
+            "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+            ".tox", ".sass-cache", ".turbo", ".nuxt", ".svelte-kit",
+            ".astro", ".angular", ".nx", ".vite", ".parcel-cache",
+            ".docusaurus", ".serverless", ".dart_tool",
+        ]
+        let fixture = try Fixture()
+        for name in names {
+            try fixture.file("projet/\(name)/blob.bin", bytes: 5_000)
+        }
+
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let report = JunkScanner.scan(store: store)
+
+        let found = Set(report.findings.map { ($0.path as NSString).lastPathComponent })
+        for name in names {
+            #expect(found.contains(name), "« \(name) » n'a pas été détecté")
+        }
+    }
+
     @Test("node_modules is found")
     func findsNodeModules() async throws {
         let fixture = try Fixture()

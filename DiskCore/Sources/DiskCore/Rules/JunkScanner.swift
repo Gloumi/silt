@@ -10,19 +10,23 @@ import Foundation
 /// would be tens of millions of comparisons on a real home directory.
 public enum JunkScanner {
 
+    /// - Parameter root: subtree to confine the search to. Defaults to the scan
+    ///   root. Home-relative rules simply stop matching outside it, which is the
+    ///   behaviour we want: asked about one project folder, nobody expects
+    ///   `~/Library/Caches` in the answer.
     public static func scan(
-        store: NodeStore, ruleSet: JunkRuleSet = .bundled()
+        store: NodeStore, ruleSet: JunkRuleSet = .bundled(), root: Int32 = 0
     ) -> JunkReport {
-        guard !store.isEmpty else {
+        guard !store.isEmpty, root >= 0, Int(root) < store.count else {
             return JunkReport(findings: [], categories: ruleSet.categories)
         }
 
         var findings: [JunkFinding] = []
         var claimed: Set<Int32> = []
 
-        resolvePathRules(store: store, ruleSet: ruleSet,
+        resolvePathRules(store: store, root: root, ruleSet: ruleSet,
                          findings: &findings, claimed: &claimed)
-        resolveNameRules(store: store, ruleSet: ruleSet,
+        resolveNameRules(store: store, root: root, ruleSet: ruleSet,
                          findings: &findings, claimed: &claimed)
 
         findings.sort { $0.bytes > $1.bytes }
@@ -33,13 +37,22 @@ public enum JunkScanner {
 
     private static func resolvePathRules(
         store: NodeStore,
+        root: Int32,
         ruleSet: JunkRuleSet,
         findings: inout [JunkFinding],
         claimed: inout Set<Int32>
     ) {
-        let rootPath = store.name(of: 0)
+        // The scan root's own name *is* its full path; anything deeper has to be
+        // rebuilt from the tree.
+        let rootPath = root == 0 ? store.name(of: 0) : store.path(of: root)
         let home = NSHomeDirectory()
 
+        // File order is precedence: the first rule to claim a node keeps it.
+        // A rule that sweeps the children of a directory therefore has to be
+        // declared *after* any rule naming something specific inside it —
+        // `generic-cache` sitting before `.cache/puppeteer` silently swallowed
+        // it, and `.cache/huggingface` with it, reporting a "caution" model
+        // cache as a "safe" generic one.
         for rule in ruleSet.rules {
             let relative = rule.match.homePath ?? rule.match.childrenOfHomePath
             guard let relative else { continue }
@@ -47,7 +60,7 @@ public enum JunkScanner {
             let absolute = home + "/" + relative
             // The rule only applies if its target lies inside what was scanned.
             guard let components = relativeComponents(of: absolute, under: rootPath),
-                  let node = store.descendant(of: 0, at: components)
+                  let node = store.descendant(of: root, at: components)
             else { continue }
 
             if rule.match.childrenOfHomePath != nil {
@@ -79,6 +92,7 @@ public enum JunkScanner {
 
     private static func resolveNameRules(
         store: NodeStore,
+        root: Int32,
         ruleSet: JunkRuleSet,
         findings: inout [JunkFinding],
         claimed: inout Set<Int32>
@@ -101,11 +115,12 @@ public enum JunkScanner {
         }
         guard !compiled.isEmpty else { return }
 
-        var stack: [Int32] = [0]
+        var stack: [Int32] = [root]
         while let node = stack.popLast() {
             var matched = false
 
-            if node != 0, store.isDirectory(node), !claimed.contains(node) {
+            // The subtree we were asked about is never itself the answer.
+            if node != root, store.isDirectory(node), !claimed.contains(node) {
                 for candidate in compiled where store.hasName(node, candidate.name) {
                     if let sibling = candidate.siblingFile {
                         let parent = store.parent[Int(node)]

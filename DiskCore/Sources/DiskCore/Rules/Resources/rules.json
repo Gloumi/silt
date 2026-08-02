@@ -99,6 +99,94 @@
       "recovery": "terraform init",
       "match": { "directoryName": ".terraform" }
     },
+    {
+      "id": "turborepo",
+      "category": "build",
+      "title": "Cache Turborepo",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine tâche",
+      "match": { "directoryName": ".turbo" }
+    },
+    {
+      "id": "nuxt-build",
+      "category": "build",
+      "title": "Build Nuxt",
+      "safety": "safe",
+      "recovery": "nuxt build",
+      "match": { "directoryName": ".nuxt" }
+    },
+    {
+      "id": "sveltekit-build",
+      "category": "build",
+      "title": "Build SvelteKit",
+      "safety": "safe",
+      "recovery": "npm run build",
+      "match": { "directoryName": ".svelte-kit" }
+    },
+    {
+      "id": "astro-build",
+      "category": "build",
+      "title": "Build Astro",
+      "safety": "safe",
+      "recovery": "astro build",
+      "match": { "directoryName": ".astro" }
+    },
+    {
+      "id": "angular-cache",
+      "category": "build",
+      "title": "Cache Angular",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine compilation",
+      "match": { "directoryName": ".angular" }
+    },
+    {
+      "id": "nx-cache",
+      "category": "build",
+      "title": "Cache Nx",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine tâche",
+      "match": { "directoryName": ".nx" }
+    },
+    {
+      "id": "vite-cache",
+      "category": "build",
+      "title": "Cache Vite",
+      "safety": "safe",
+      "recovery": "Régénéré au prochain démarrage",
+      "match": { "directoryName": ".vite" }
+    },
+    {
+      "id": "parcel-cache",
+      "category": "build",
+      "title": "Cache Parcel",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine compilation",
+      "match": { "directoryName": ".parcel-cache" }
+    },
+    {
+      "id": "docusaurus-build",
+      "category": "build",
+      "title": "Build Docusaurus",
+      "safety": "safe",
+      "recovery": "npm run build",
+      "match": { "directoryName": ".docusaurus" }
+    },
+    {
+      "id": "serverless-build",
+      "category": "build",
+      "title": "Artefacts Serverless",
+      "safety": "safe",
+      "recovery": "serverless package",
+      "match": { "directoryName": ".serverless" }
+    },
+    {
+      "id": "dart-tool",
+      "category": "build",
+      "title": "Artefacts Dart et Flutter",
+      "safety": "safe",
+      "recovery": "flutter pub get",
+      "match": { "directoryName": ".dart_tool" }
+    },
 
     {
       "id": "xcode-derived-data",
@@ -190,20 +278,60 @@
       "match": { "homePath": ".gem" }
     },
     {
-      "id": "generic-cache",
-      "category": "toolcache",
-      "title": "Cache utilisateur",
-      "safety": "safe",
-      "recovery": "Régénéré automatiquement",
-      "match": { "childrenOfHomePath": ".cache" }
-    },
-    {
       "id": "puppeteer",
       "category": "toolcache",
       "title": "Navigateurs Puppeteer",
       "safety": "safe",
       "recovery": "Re-téléchargés à l'installation suivante",
       "match": { "homePath": ".cache/puppeteer" }
+    },
+    {
+      "id": "python-bytecode",
+      "category": "toolcache",
+      "title": "Bytecode Python",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine exécution",
+      "match": { "directoryName": "__pycache__" }
+    },
+    {
+      "id": "pytest-cache",
+      "category": "toolcache",
+      "title": "Cache pytest",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine exécution des tests",
+      "match": { "directoryName": ".pytest_cache" }
+    },
+    {
+      "id": "mypy-cache",
+      "category": "toolcache",
+      "title": "Cache mypy",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine analyse",
+      "match": { "directoryName": ".mypy_cache" }
+    },
+    {
+      "id": "ruff-cache",
+      "category": "toolcache",
+      "title": "Cache Ruff",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine analyse",
+      "match": { "directoryName": ".ruff_cache" }
+    },
+    {
+      "id": "tox-envs",
+      "category": "toolcache",
+      "title": "Environnements tox",
+      "safety": "safe",
+      "recovery": "tox",
+      "match": { "directoryName": ".tox" }
+    },
+    {
+      "id": "sass-cache",
+      "category": "toolcache",
+      "title": "Cache Sass",
+      "safety": "safe",
+      "recovery": "Régénéré à la prochaine compilation",
+      "match": { "directoryName": ".sass-cache" }
     },
 
     {
@@ -272,6 +400,15 @@
       "safety": "safe",
       "recovery": "Régénérés automatiquement",
       "match": { "childrenOfHomePath": "Library/Logs" }
+    },
+
+    {
+      "id": "generic-cache",
+      "category": "toolcache",
+      "title": "Cache utilisateur",
+      "safety": "safe",
+      "recovery": "Régénéré automatiquement",
+      "match": { "childrenOfHomePath": ".cache" }
     }
   ]
 }
