@@ -125,21 +125,32 @@ struct TreemapView: View {
         guard let store = model.store else { return }
         for tile in tiles {
             guard let node = tile.node,
-                  tile.rect.width > 54, tile.rect.height > 16
+                  tile.rect.width > 40,
+                  tile.rect.height > TreemapLayout.headerHeight
             else { continue }
 
             let text = Text(store.name(of: node))
                 .font(.system(size: 10, weight: tile.depth == 1 ? .semibold : .regular))
                 .foregroundStyle(isDark ? .white : .black)
             let resolved = context.resolve(text)
+            // Measured unconstrained on purpose: measuring inside the tile's own
+            // width returns a value clamped to that width, so the "does it fit"
+            // test could never fail and long names spilled into their
+            // neighbours.
             let measured = resolved.measure(
-                in: CGSize(width: tile.rect.width - 8, height: 16)
+                in: CGSize(width: CGFloat.greatestFiniteMagnitude,
+                           height: CGFloat.greatestFiniteMagnitude)
             )
             guard measured.width <= tile.rect.width - 8 else { continue }
 
-            context.draw(
+            // Clipped as well: geometry should already guarantee containment,
+            // but a label escaping its block is the most visible possible bug.
+            var label = context
+            label.clip(to: Path(tile.rect))
+            label.draw(
                 resolved,
-                at: CGPoint(x: tile.rect.minX + 5, y: tile.rect.minY + 8),
+                at: CGPoint(x: tile.rect.minX + 5,
+                            y: tile.rect.minY + TreemapLayout.headerHeight / 2 + 1),
                 anchor: .leading
             )
         }

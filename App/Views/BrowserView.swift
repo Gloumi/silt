@@ -196,7 +196,7 @@ private struct BreadcrumbBar: View {
             } label: {
                 Image(systemName: "chevron.up")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 22, height: 20)
+                    .frame(width: 24, height: 24)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -210,6 +210,7 @@ private struct BreadcrumbBar: View {
             ViewModeSwitcher(model: model)
                 .padding(.trailing, 12)
         }
+        .padding(.vertical, 5)
         .background(.bar)
         // The switcher's tooltip hangs below this bar and must draw over the
         // content beneath it.
@@ -236,7 +237,7 @@ private struct BreadcrumbBar: View {
                     .disabled(depth == model.trail.count - 1)
                 }
             }
-            .padding(.vertical, 7)
+            .padding(.vertical, 4)
         }
         .scrollIndicators(.never)
     }

@@ -20,6 +20,8 @@ struct StrataApp: App {
                 Button("Remonter d'un niveau") { model.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
                     .disabled(model.trail.count <= 1)
+                Button("Aperçu rapide") { model.togglePreview() }
+                    .keyboardShortcut(.space, modifiers: [])
                 Button("Mettre à la corbeille") { model.requestDeletion() }
                     .keyboardShortcut(.delete, modifiers: .command)
                     .disabled(model.selection.isEmpty)
@@ -58,6 +60,9 @@ struct ContentView: View {
         .inspector(isPresented: $showsInspector) {
             InspectorView(model: model)
                 .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
+        }
+        .sheet(item: Bindable(model).previewURL) { url in
+            QuickLookSheet(url: url) { model.previewURL = nil }
         }
         .sheet(item: Bindable(model).deletionPlanBox) { box in
             DeletionSheet(
@@ -152,4 +157,10 @@ private struct DeletionBanner: View {
         .transition(.move(edge: .bottom).combined(with: .opacity))
         .animation(.spring(response: 0.35), value: message)
     }
+}
+
+
+/// `sheet(item:)` needs identity; a file URL is its own.
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
 }

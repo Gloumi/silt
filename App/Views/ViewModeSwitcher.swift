@@ -33,7 +33,7 @@ struct ViewModeSwitcher: View {
         } label: {
             Image(systemName: mode.symbol)
                 .font(.system(size: 12, weight: .medium))
-                .frame(width: 30, height: 20)
+                .frame(width: 32, height: 24)
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -73,7 +73,7 @@ struct ViewModeSwitcher: View {
                 }
                 .shadow(radius: 3, y: 1)
                 .fixedSize()
-                .offset(y: 24)
+                .offset(y: 26)
                 // Never intercept the pointer: doing so would flicker the hover
                 // state the tooltip itself depends on.
                 .allowsHitTesting(false)

@@ -88,6 +88,9 @@ final class ScanModel {
     private(set) var junkReport: JunkReport?
     var junkSelection: Set<Int32> = []
 
+    /// File currently shown in Quick Look, if any.
+    var previewURL: URL?
+
     /// Set while the confirmation sheet is up.
     var deletionPlan: DeletionPlan? {
         didSet { deletionPlanBox = deletionPlan.map { PlanBox(plan: $0) } }
@@ -361,6 +364,17 @@ final class ScanModel {
     }
 
     func dismissDeletionMessage() { deletionMessage = nil }
+
+    /// Space opens a preview of the inspected item, and closes it again.
+    /// Directories have nothing to preview, so they are ignored rather than
+    /// opening an empty panel.
+    func togglePreview() {
+        if previewURL != nil { previewURL = nil; return }
+        guard let store, let node = inspectedNode,
+              !store.isDirectory(node) || store.flags[Int(node)].contains(.package)
+        else { return }
+        previewURL = URL(fileURLWithPath: store.path(of: node))
+    }
 
     // MARK: - Cleanup
 

@@ -116,12 +116,11 @@ public enum TreemapLayout {
             ))
 
             if store.isDirectory(child.node), depth < maxDepth {
-                // Inset leaves the parent's edge visible, which is what makes
-                // the nesting legible at all.
-                let inner = tile.insetBy(dx: 3, dy: 3)
-                    .offsetBy(dx: 0, dy: 4)
-                    .divided(atDistance: max(0, tile.height - 11), from: .minYEdge).slice
-                if inner.width > 6, inner.height > 6 {
+                // Children start *below* a reserved strip, so a parent's name
+                // always has somewhere to sit. Without it the first child is
+                // drawn straight over its parent's title.
+                let inner = contentRect(of: tile)
+                if inner.width > 10, inner.height > 10 {
                     descend(
                         store: store, parent: child.node, rect: inner,
                         depth: depth + 1, slot: childSlot, maxDepth: maxDepth,
@@ -132,6 +131,22 @@ public enum TreemapLayout {
             }
         }
     }
+
+    /// Area a directory tile leaves to its children: inset on every side, plus
+    /// a strip at the top for the tile's own name.
+    public static func contentRect(of tile: CGRect) -> CGRect {
+        let inset: CGFloat = 3
+        let header = headerHeight
+        let rect = tile.insetBy(dx: inset, dy: inset)
+        guard rect.height > header else { return .zero }
+        return CGRect(
+            x: rect.minX, y: rect.minY + header,
+            width: rect.width, height: rect.height - header
+        )
+    }
+
+    /// Height reserved for a directory tile's label.
+    public static let headerHeight: CGFloat = 14
 
     // MARK: - Squarify
 
