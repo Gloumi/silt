@@ -9,6 +9,9 @@ struct SiltApp: App {
     var body: some Scene {
         Window("Silt", id: "main") {
             ContentView(model: model)
+                // NSApp exists by the time a window appears, which it does not
+                // when Preferences is first constructed.
+                .task { Preferences.shared.applyAppearance() }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
 

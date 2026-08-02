@@ -1,5 +1,29 @@
+import AppKit
 import DiskCore
 import SwiftUI
+
+enum AppearanceSetting: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "Système"
+        case .light: "Clair"
+        case .dark: "Sombre"
+        }
+    }
+
+    /// Nil means "follow the system", which is what an unset appearance does.
+    var appearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
 
 /// Persisted preferences. Kept deliberately short — every option here is one the
 /// engine genuinely behaves differently for, not a knob for its own sake.
@@ -13,6 +37,21 @@ final class Preferences {
         static let descendPackages = "descendIntoPackages"
         static let collapseDependencies = "collapseDependencies"
         static let seenWelcome = "hasSeenWelcome"
+        static let appearance = "appearance"
+    }
+
+    /// Applied to `NSApp` rather than through `preferredColorScheme`, which
+    /// only reaches the view it is attached to — the Settings window, the menu
+    /// bar and every sheet would keep following the system.
+    var appearance: AppearanceSetting {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: Key.appearance)
+            applyAppearance()
+        }
+    }
+
+    func applyAppearance() {
+        NSApp?.appearance = appearance.appearance
     }
 
     var useLogicalSize: Bool {
@@ -35,6 +74,8 @@ final class Preferences {
         descendIntoPackages = defaults.bool(forKey: Key.descendPackages)
         collapseDependencies = defaults.bool(forKey: Key.collapseDependencies)
         hasSeenWelcome = defaults.bool(forKey: Key.seenWelcome)
+        appearance = defaults.string(forKey: Key.appearance)
+            .flatMap(AppearanceSetting.init(rawValue:)) ?? .system
     }
 
     /// Scan options matching the current preferences.
@@ -52,6 +93,16 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Apparence") {
+                Picker("Thème", selection: $preferences.appearance) {
+                    ForEach(AppearanceSetting.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Text("Les couleurs de la vue Anneaux ont deux jeux distincts, vérifiés séparément en clair et en sombre — ce n'est pas la même palette éclaircie.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Mesure") {
                 Picker("Taille affichée", selection: $preferences.useLogicalSize) {
                     Text("Occupée sur le disque").tag(false)
