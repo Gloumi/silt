@@ -1,11 +1,14 @@
 # Homebrew cask for Silt.
 #
-# Two ways to publish it. To offer `brew install --cask silt` straight away,
-# host this as a tap — a repo named `homebrew-silt` containing this file under
-# Casks/ — and users run:
+# This repo doubles as its own tap: Homebrew accepts an explicit URL, so no
+# second `homebrew-silt` repo is needed as long as Casks/ sits at the root.
 #
-#   brew tap <user>/silt
-#   brew install --cask silt
+#   brew tap Gloumi/silt https://github.com/Gloumi/silt
+#   brew install --cask --no-quarantine silt
+#
+# `--no-quarantine` matters while the app is unsigned: without it macOS flags
+# the download and refuses the first launch. Drop it once notarisation is in
+# place.
 #
 # Submitting to homebrew-cask proper requires the app to be signed and
 # notarised, and the project to have some visible following. Do that once the
@@ -18,10 +21,10 @@ cask "silt" do
   version "0.1.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
-  url "https://github.com/USER/silt/releases/download/v#{version}/Silt-#{version}.dmg"
+  url "https://github.com/Gloumi/silt/releases/download/v#{version}/Silt-#{version}.dmg"
   name "Silt"
   desc "Disk space analyser with sunburst and treemap views"
-  homepage "https://github.com/USER/silt"
+  homepage "https://github.com/Gloumi/silt"
 
   depends_on macos: ">= :sequoia"
 

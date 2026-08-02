@@ -11,16 +11,39 @@ Silt vise les deux bouts : un moteur très rapide et une interface qui ressemble
 ## Installation
 
 ```sh
-brew tap USER/silt
-brew install --cask silt
+brew tap Gloumi/silt https://github.com/Gloumi/silt
+brew install --cask --no-quarantine silt
 ```
 
-Ou téléchargez le DMG depuis les [releases](https://github.com/USER/silt/releases).
+Ou téléchargez le DMG depuis les [releases](https://github.com/Gloumi/silt/releases).
 
 > **Accès complet au disque.** macOS protège Mail, Messages, Photos et les
 > sauvegardes d'appareils. Sans autorisation, ces dossiers sont signalés comme
 > illisibles et manquent aux totaux. L'app explique la marche à suivre au premier
 > lancement — aucune application ne peut demander cette permission autrement.
+
+### Le premier lancement, sans signature Apple
+
+Les binaires publiés ici ne sont pas signés par un certificat Developer ID —
+celui-ci coûte 99 €/an et le projet n'y est pas encore. macOS met donc en
+quarantaine tout ce qui vient du web et refuse le premier lancement.
+
+Le `--no-quarantine` ci-dessus règle le problème en amont : le drapeau n'est
+jamais posé, l'app s'ouvre normalement. Si vous passez par le DMG, deux voies :
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Silt.app
+```
+
+ou, sans terminal : lancez Silt, laissez macOS refuser, puis ouvrez **Réglages
+Système › Confidentialité et sécurité**. Un bouton *Ouvrir quand même* y apparaît
+juste après la tentative. Depuis macOS 15, le clic droit → *Ouvrir* ne suffit
+plus ; c'est ce passage par les Réglages qui l'a remplacé.
+
+Rien de tout cela ne remplace une vraie signature : ces manipulations désactivent
+une vérification, elles ne prouvent pas que le binaire est celui compilé depuis
+ces sources. La seule garantie réelle, tant qu'il n'y a pas de notarisation,
+c'est de compiler soi-même — voir [Développement](#développement).
 
 ## Ce que ça fait
 
