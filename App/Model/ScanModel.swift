@@ -106,6 +106,14 @@ final class ScanModel {
         case idle, running, ready
     }
 
+    /// Set while the uninstall sheet is up, and while it is being built.
+    var uninstallPlan: UninstallPlan?
+    private(set) var uninstallPhase: UninstallPhase = .idle
+
+    enum UninstallPhase {
+        case idle, preparing
+    }
+
     /// File currently shown in Quick Look, if any.
     var previewURL: URL?
     /// Full Disk Access explainer, shown once and reachable from the Help menu
@@ -445,10 +453,14 @@ final class ScanModel {
         deletionPlan = nil
 
         // Capture sizes first: markDeleted zeroes them, and undo needs them.
+        // Only for requests that came from the tree — an uninstaller's leftovers
+        // have no node, and feeding a made-up index to the roll-up would corrupt
+        // every ancestor's total.
         var sizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
         for request in plan.requests {
-            let index = Int(request.node)
-            sizes[request.node] = (
+            guard let node = request.node else { continue }
+            let index = Int(node)
+            sizes[node] = (
                 store.totalAlloc[index], store.totalLogical[index],
                 store.fileCount[index]
             )
@@ -458,12 +470,12 @@ final class ScanModel {
         let report = await Task.detached { SafeDeleter.moveToTrash(requests) }.value
 
         for item in report.trashed {
-            result?.store.markDeleted(item.node)
+            if let node = item.node { result?.store.markDeleted(node) }
         }
         // Acting on a folder now means having opened it, so the deleted node is
         // often the one under our feet. Climb out before it becomes a view of
         // something that no longer exists.
-        let removed = Set(report.trashed.map(\.node))
+        let removed = Set(report.trashed.compactMap(\.node))
         if let index = trail.firstIndex(where: removed.contains) {
             trail.removeSubrange(max(1, index)...)
         }
@@ -483,9 +495,11 @@ final class ScanModel {
 
         let failedPaths = Set(failures.map(\.path))
         for item in items where !failedPaths.contains(item.originalPath) {
-            if let sizes = undoSizes[item.node] {
+            // Out-of-tree items restore on disk like any other; there is simply
+            // no roll-up to put back.
+            if let node = item.node, let sizes = undoSizes[node] {
                 result?.store.unmarkDeleted(
-                    item.node, alloc: sizes.alloc,
+                    node, alloc: sizes.alloc,
                     logical: sizes.logical, files: sizes.files
                 )
             }
@@ -510,6 +524,91 @@ final class ScanModel {
               !store.isDirectory(node) || store.flags[Int(node)].contains(.package)
         else { return }
         previewURL = URL(fileURLWithPath: store.path(of: node))
+    }
+
+    // MARK: - Uninstalling an application
+
+    /// True for a node that is an application bundle.
+    ///
+    /// Tested on the name rather than `NodeFlags.package`, which does not tell
+    /// `.app` from `.framework` and is not even set when the user turns on
+    /// "descend into packages".
+    func isApplication(_ node: Int32) -> Bool {
+        guard let store, store.isDirectory(node) else { return false }
+        return store.name(of: node).lowercased().hasSuffix(".app")
+    }
+
+    /// Gathers the bundle and its leftovers. Off the main actor: it stats every
+    /// candidate under `~/Library`, which is far too much for a button press.
+    func prepareUninstall(_ node: Int32) {
+        guard let store, isApplication(node) else { return }
+        let path = store.path(of: node)
+        uninstallPhase = .preparing
+
+        Task { [weak self] in
+            let gathered = await Task.detached {
+                () -> (AppBundle, [Leftover])? in
+                guard let app = AppUninstaller.inspect(appPath: path) else {
+                    return nil
+                }
+                return (app, AppUninstaller.leftovers(for: app))
+            }.value
+
+            guard let self else { return }
+            uninstallPhase = .idle
+            guard let (app, leftovers) = gathered else {
+                deletionMessage = "« \((path as NSString).lastPathComponent) » n'est pas une application lisible."
+                return
+            }
+            uninstallPlan = UninstallPlan(
+                app: app, node: node, leftovers: leftovers,
+                isRunning: RunningApps.isRunning(bundleID: app.bundleID)
+            )
+        }
+    }
+
+    /// Trashes the bundle and whichever leftovers were ticked.
+    ///
+    /// Goes through `SafeDeleter` like everything else, so the deny list still
+    /// applies per path and the whole thing stays undoable.
+    func uninstall(_ plan: UninstallPlan, keeping selected: Set<String>) async {
+        var requests: [SafeDeleter.Request] = [
+            .init(node: plan.node, path: plan.app.path, bytes: plan.app.bytes)
+        ]
+        for leftover in plan.leftovers where selected.contains(leftover.path) {
+            // No node: these were never part of the scanned tree.
+            requests.append(
+                .init(node: nil, path: leftover.path, bytes: leftover.bytes)
+            )
+        }
+        uninstallPlan = nil
+
+        var sizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
+        if let node = plan.node, let store {
+            let index = Int(node)
+            sizes[node] = (
+                store.totalAlloc[index], store.totalLogical[index],
+                store.fileCount[index]
+            )
+        }
+
+        let report = await Task.detached {
+            SafeDeleter.moveToTrash(requests)
+        }.value
+
+        for item in report.trashed {
+            if let node = item.node { result?.store.markDeleted(node) }
+        }
+        let removed = Set(report.trashed.compactMap(\.node))
+        if let index = trail.firstIndex(where: removed.contains) {
+            trail.removeSubrange(max(1, index)...)
+        }
+        undoSizes = sizes
+        lastDeletion = report.trashed.isEmpty ? nil : report
+        deletionMessage = summary(of: report)
+        selection = []
+        refreshRows()
+        refreshJunkIfShown()
     }
 
     // MARK: - Cleanup

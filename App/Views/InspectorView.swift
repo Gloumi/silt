@@ -109,6 +109,21 @@ private struct Details: View {
             }
             .keyboardShortcut("r")
 
+            if model.isApplication(node) {
+                Button {
+                    model.prepareUninstall(node)
+                } label: {
+                    Label(
+                        model.uninstallPhase == .preparing
+                            ? "Recherche des fichiers liés…"
+                            : "Désinstaller l'application…",
+                        systemImage: "trash.slash"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .disabled(model.uninstallPhase == .preparing)
+            }
+
             // Only for directories: the rules match folders, so offering this
             // on a file would always come back empty.
             if store.isDirectory(node) {

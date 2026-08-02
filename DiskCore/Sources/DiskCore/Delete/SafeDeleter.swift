@@ -1,14 +1,19 @@
 import Foundation
 
 public struct TrashedItem: Sendable, Identifiable {
-    public let node: Int32
+    /// Node it came from, or nil when the item was never part of the tree —
+    /// an application's leftovers live all over `~/Library` and are found by
+    /// name, not by having been scanned.
+    public let node: Int32?
     public let originalPath: String
     /// Where it landed in the Trash. Nil when the volume has no trash and the
     /// item could only be removed outright.
     public let trashPath: String?
     public let bytes: Int64
 
-    public var id: Int32 { node }
+    /// The path, not the node: a path is unique whether or not the item was in
+    /// the tree, and two out-of-tree items would otherwise share an identity.
+    public var id: String { originalPath }
 }
 
 public struct DeletionFailure: Sendable, Identifiable {
@@ -37,11 +42,14 @@ public struct DeletionReport: Sendable {
 public enum SafeDeleter {
 
     public struct Request: Sendable {
-        public let node: Int32
+        /// Nil for a path that is not part of any scanned tree. `moveToTrash`
+        /// never reads it — it works entirely off `path` — but the caller needs
+        /// it back to update the tree it does own.
+        public let node: Int32?
         public let path: String
         public let bytes: Int64
 
-        public init(node: Int32, path: String, bytes: Int64) {
+        public init(node: Int32?, path: String, bytes: Int64) {
             self.node = node
             self.path = path
             self.bytes = bytes

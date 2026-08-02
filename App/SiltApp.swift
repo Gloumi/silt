@@ -90,6 +90,12 @@ struct ContentView: View {
                 onConfirm: { Task { await model.confirmDeletion() } }
             )
         }
+        .sheet(item: Bindable(model).uninstallPlan) { plan in
+            UninstallSheet(
+                model: model, plan: plan,
+                onDismiss: { model.uninstallPlan = nil }
+            )
+        }
         .safeAreaInset(edge: .bottom) {
             if let message = model.deletionMessage {
                 DeletionBanner(

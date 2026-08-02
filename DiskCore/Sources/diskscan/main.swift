@@ -14,6 +14,8 @@ struct Arguments {
     var quiet = false
     var workers: Int?
     var junk = false
+    /// Dry run of the uninstaller for one `.app`. Never deletes anything.
+    var uninstall: String?
 }
 
 func parseArguments() -> Arguments {
@@ -35,6 +37,9 @@ func parseArguments() -> Arguments {
             args.workers = i < raw.count ? Int(raw[i]) : nil
         case "--junk":
             args.junk = true
+        case "--uninstall":
+            i += 1
+            args.uninstall = i < raw.count ? raw[i] : nil
         case "--quiet", "-q":
             args.quiet = true
         case "--help", "-h":
@@ -46,6 +51,10 @@ func parseArguments() -> Arguments {
                   --no-collapse
                               give node_modules/.git/bundles individual nodes
               -q, --quiet     totals only
+                  --junk      list recoverable space
+                  --uninstall PATH.app
+                              dry run: what removing that app would take with
+                              it. Prints only, never deletes.
             """)
             exit(0)
         default:
@@ -71,6 +80,45 @@ func formatBytes(_ bytes: Int64) -> String {
 }
 
 let arguments = parseArguments()
+
+// Dry run, before any scanning: the uninstaller works off the filesystem by
+// name, not off a scanned tree.
+if let target = arguments.uninstall {
+    guard let app = AppUninstaller.inspect(appPath: target) else {
+        print("« \(target) » n'est pas une application lisible.")
+        exit(1)
+    }
+    print("\(app.name) — \(app.bundleID ?? "sans identifiant")")
+    print("  \(formatBytes(app.bytes).padding(toLength: 10, withPad: " ", startingAt: 0))\(app.path)")
+
+    let leftovers = AppUninstaller.leftovers(for: app)
+    var total = app.bytes
+    for confidence in LeftoverConfidence.allCases {
+        let group = leftovers.filter { $0.confidence == confidence }
+        guard !group.isEmpty else { continue }
+        let sum = group.reduce(Int64(0)) { $0 + $1.bytes }
+        print("\n\(confidence.cliLabel) — \(formatBytes(sum)) sur \(group.count) élément(s)")
+        for item in group {
+            let size = formatBytes(item.bytes)
+                .padding(toLength: 10, withPad: " ", startingAt: 0)
+            print("  \(size)\(item.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))")
+        }
+        // Only the first tier is ticked by default in the app.
+        if confidence == .certain { total += sum }
+    }
+    print("\nCoché par défaut : \(formatBytes(total)). Rien n'a été supprimé.")
+    exit(0)
+}
+
+extension LeftoverConfidence {
+    var cliLabel: String {
+        switch self {
+        case .certain: "CERTAIN (coché par défaut)"
+        case .probable: "PROBABLE (décoché)"
+        case .possible: "À VÉRIFIER (décoché)"
+        }
+    }
+}
 
 var options = ScanOptions()
 if let workers = arguments.workers { options.workerCount = max(1, workers) }
