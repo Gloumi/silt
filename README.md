@@ -48,12 +48,20 @@ c'est de compiler soi-même — voir [Développement](#développement).
 ## Ce que ça fait
 
 - **Quatre vues** sur la même arborescence — anneaux, blocs, liste triée,
-  nettoyage.
+  nettoyage. Les anneaux s'adaptent à la profondeur réelle du dossier au lieu de
+  laisser les niveaux inutilisés en blanc.
 - **Suppression sécurisée** : tout passe par la corbeille, une liste
   d'interdiction protège le système, et l'annulation restaure.
-- **Détection de gras** orientée développement : `node_modules`, DerivedData,
-  simulateurs iOS, caches d'outils, builds. Sur une machine de dev réelle, elle
-  a repéré 75 Go, dont 48 Go régénérables sans effort.
+- **Détection de gras** orientée développement : 49 règles — `node_modules`,
+  DerivedData, simulateurs iOS, caches d'outils, builds de tous les frameworks
+  JS courants, caches Python. Sur une machine de dev réelle : 62 Go repérés.
+  Le nettoyage se limite à un dossier depuis l'inspecteur.
+- **Désinstallation d'applications** : retrouve ce qu'une app laisse dans
+  `~/Library` — caches, conteneurs, préférences, état sauvegardé. Chaque
+  trouvaille indique **comment** elle a été rapprochée, et seul l'indiscutable
+  est coché ([pourquoi](#désinstaller-large-sans-emporter-le-voisin)).
+- **Les scans restent en mémoire** : revenir sur un volume déjà analysé est
+  instantané, et l'actualisation est un geste explicite (⇧⌘R).
 
 ## Le moteur
 
@@ -63,6 +71,7 @@ c'est de compiler soi-même — voir [Développement](#développement).
 cd DiskCore
 swift run -c release diskscan ~ --depth 2   # arborescence
 swift run -c release diskscan ~ --junk      # récupérable
+swift run -c release diskscan --uninstall /Applications/X.app  # essai à blanc
 swift test
 ```
 
@@ -147,6 +156,39 @@ invente ses propres caches. Les matcheurs sont déclaratifs :
 `siblingFile` évite les faux positifs : un dossier `vendor` ne compte que si un
 `composer.json` est à côté. `safety` vaut `safe` (régénéré tout seul) ou
 `caution` (récupérable, mais ça coûte quelque chose).
+
+**L'ordre du fichier fait office de priorité.** La première règle qui réclame un
+dossier le garde. Une règle qui balaye les enfants d'un répertoire doit donc être
+déclarée *après* toute règle qui nomme quelque chose de précis à l'intérieur —
+sinon cette dernière ne s'appliquera jamais. C'est arrivé : `generic-cache`
+placée avant `.cache/huggingface` faisait passer 464 Mo de modèles pour un cache
+générique « sans risque ». Un test vérifie l'invariant sur le fichier livré.
+
+### Désinstaller large sans emporter le voisin
+
+Un `.app` ne représente presque jamais la place qu'une application occupe. Silt
+lit son `CFBundleIdentifier` et balaye les dossiers de `~/Library` et
+`/Library`, en classant chaque trouvaille selon **la façon dont elle a été
+rapprochée** :
+
+| Niveau | Critère | Coché |
+|---|---|---|
+| Certain | Porte l'identifiant de paquet (`com.x.y`, `com.x.y.plist`, `group.com.x.y`) | ✅ |
+| Probable | Porte exactement le nom de l'application | ❌ |
+| À vérifier | Nom approchant, ou même préfixe éditeur | ❌ |
+
+Les deux moitiés sont nécessaires. Anarlog se nomme `com.hyprnote.stable` :
+l'identifiant seul trouve son cache de 1,2 Go mais rate
+`~/Library/Application Support/anarlog`, et le nom seul fait l'inverse.
+
+Le dernier niveau est celui qui justifie tout le dispositif. Android Studio est
+`com.google.android.studio`, donc le préfixe `com.google.` fait remonter les
+préférences de Chrome. Les cocher d'office effacerait la configuration de Chrome
+en désinstallant Android Studio. Elles sont **montrées** — balayer large est le
+but — et jamais présélectionnées. Il n'y a volontairement pas de « tout cocher ».
+
+`diskscan --uninstall` fait le même travail en affichage seul, sans rien
+supprimer.
 
 ## Licence
 
