@@ -10,6 +10,11 @@ struct InspectorView: View {
         Group {
             if model.selection.count > 1 {
                 MultipleSelection(model: model)
+            } else if let scope = model.othersScope, model.selection.isEmpty {
+                // Standing inside an aggregated slice. Describing the parent
+                // here would contradict the breadcrumb and, worse, point
+                // "Afficher dans le Finder" at a folder we are not in.
+                OthersDetails(model: model, count: scope.count)
             } else if let store = model.store, let node = model.inspectedNode {
                 Details(model: model, store: store, node: node)
             } else {
@@ -22,6 +27,69 @@ struct InspectorView: View {
         .frame(minWidth: 240)
     }
 
+}
+
+// MARK: - Aggregated slice
+
+/// What an "others" slice is, once you have stepped into it.
+///
+/// It is a drawing decision, not a place: the items it stands for are scattered
+/// through the folder and share no location of their own. The actions are shown
+/// disabled rather than hidden, so the panel does not reshuffle as you move in
+/// and out of one — and so it is obvious *why* they are unavailable.
+private struct OthersDetails: View {
+    let model: ScanModel
+    let count: Int
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 11) {
+                    Image(systemName: "square.on.square.dashed")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Autres (\(count))")
+                            .font(.headline)
+                        Text("Regroupement d'affichage")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                LabeledContent("Taille", value: Format.bytes(model.scopeSize))
+                LabeledContent(
+                    "Contient",
+                    value: "\(Format.count(Int(model.scopeFileCount))) fichiers"
+                )
+
+                Callout(
+                    text: "Ces \(count) éléments sont trop petits pour être dessinés séparément. Ils n'ont pas d'emplacement commun sur le disque : ouvrez-en un pour agir dessus.",
+                    tone: .neutral
+                )
+
+                Divider()
+
+                VStack(spacing: 8) {
+                    Button {} label: {
+                        Label("Afficher dans le Finder", systemImage: "folder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(true)
+                    .help("Un regroupement n'existe pas sur le disque.")
+
+                    Button(role: .destructive) {} label: {
+                        Label("Mettre à la corbeille", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(true)
+                    .help("Sélectionnez les éléments un par un pour les supprimer.")
+                }
+            }
+            .padding(14)
+        }
+    }
 }
 
 // MARK: - Single item

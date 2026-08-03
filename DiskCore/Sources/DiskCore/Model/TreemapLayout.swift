@@ -2,6 +2,10 @@ import CoreGraphics
 import Foundation
 
 public struct TreemapTile: Identifiable, Sendable {
+    /// Position in the layout. Same reason as the sunburst's: an aggregated
+    /// tile has no node, so identity derived from one made every "others" tile
+    /// indistinguishable from the rest.
+    public var id: Int
     /// Node it represents, or nil for an aggregated "others" tile.
     public var node: Int32?
     public var rect: CGRect
@@ -11,8 +15,10 @@ public struct TreemapTile: Identifiable, Sendable {
     public var siblingIndex: Int
     public var size: Int64
     public var mergedCount: Int
+    /// The siblings it stands for, largest first — what "enter this tile"
+    /// needs, and the same contract as the sunburst's aggregated slice.
+    public var mergedNodes: [Int32] = []
 
-    public var id: Int { (depth << 26) ^ Int(node ?? -1) ^ Int(rect.minX * 7) }
     public var isOthers: Bool { node == nil }
 }
 
@@ -25,9 +31,12 @@ public struct TreemapTile: Identifiable, Sendable {
 /// of preferring a treemap over a list.
 public enum TreemapLayout {
 
+    /// - Parameter children: draw only these, as if they were all the root
+    ///   had — the tiles matching a slice the user stepped into elsewhere.
     public static func build(
         store: NodeStore,
         root: Int32,
+        children: [Int32]? = nil,
         in bounds: CGRect,
         maxDepth: Int = 3,
         slotCount: Int = 8,
@@ -37,7 +46,8 @@ public enum TreemapLayout {
         var tiles: [TreemapTile] = []
         tiles.reserveCapacity(512)
         descend(
-            store: store, parent: root, rect: bounds, depth: 1,
+            store: store, parent: root, children: children,
+            rect: bounds, depth: 1,
             slot: nil, maxDepth: maxDepth, slotCount: slotCount,
             useLogicalSize: useLogicalSize, minimumArea: minimumArea,
             into: &tiles
@@ -54,6 +64,7 @@ public enum TreemapLayout {
     private static func descend(
         store: NodeStore,
         parent: Int32,
+        children explicit: [Int32]? = nil,
         rect: CGRect,
         depth: Int,
         slot: Int?,
@@ -64,20 +75,22 @@ public enum TreemapLayout {
         into tiles: inout [TreemapTile]
     ) {
         guard depth <= maxDepth, rect.width > 1, rect.height > 1 else { return }
-        let children = store.childrenSortedBySize(
+        let children = explicit ?? store.childrenSortedBySize(
             of: parent, useLogical: useLogicalSize
         )
         guard !children.isEmpty else { return }
 
         let available = Double(rect.width * rect.height)
-        let parentSize = Double(size(store, parent, useLogicalSize))
+        let parentSize = explicit.map { list in
+            Double(list.reduce(Int64(0)) { $0 + size(store, $1, useLogicalSize) })
+        } ?? Double(size(store, parent, useLogicalSize))
         guard parentSize > 0 else { return }
 
         // Tiles too small to see or click are pooled rather than drawn as
         // hairlines nobody can hit.
         var kept: [(node: Int32, value: Double, index: Int)] = []
         var mergedValue = 0.0
-        var mergedCount = 0
+        var merged: [Int32] = []
 
         for (index, child) in children.enumerated() {
             let value = Double(size(store, child, useLogicalSize))
@@ -85,31 +98,33 @@ public enum TreemapLayout {
             let area = available * value / parentSize
             if area < minimumArea {
                 mergedValue += value
-                mergedCount += 1
+                merged.append(child)
             } else {
                 kept.append((child, value, index))
             }
         }
-        guard !kept.isEmpty || mergedCount > 0 else { return }
+        guard !kept.isEmpty || !merged.isEmpty else { return }
 
         var values = kept.map(\.value)
-        if mergedCount > 0 { values.append(mergedValue) }
+        if !merged.isEmpty { values.append(mergedValue) }
 
         let rects = squarify(values: values, in: rect)
 
         for (offset, tile) in rects.enumerated() {
-            let isMerged = mergedCount > 0 && offset == rects.count - 1
+            let isMerged = !merged.isEmpty && offset == rects.count - 1
             if isMerged {
                 tiles.append(TreemapTile(
+                    id: tiles.count,
                     node: nil, rect: tile, depth: depth, slot: -1,
                     siblingIndex: children.count, size: Int64(mergedValue),
-                    mergedCount: mergedCount
+                    mergedCount: merged.count, mergedNodes: merged
                 ))
                 continue
             }
             let child = kept[offset]
             let childSlot = slot ?? (child.index < slotCount ? child.index : -1)
             tiles.append(TreemapTile(
+                id: tiles.count,
                 node: child.node, rect: tile, depth: depth, slot: childSlot,
                 siblingIndex: child.index, size: Int64(child.value),
                 mergedCount: 0

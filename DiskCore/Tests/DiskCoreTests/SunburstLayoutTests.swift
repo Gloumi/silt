@@ -98,6 +98,30 @@ struct SunburstLayoutTests {
         #expect(summed == others.size)
     }
 
+    /// Identity used to be derived from the node, and an aggregated slice has
+    /// none — so every "others" wedge compared equal to every other. They lit
+    /// up together on hover, and a context menu opened on one still pointed at
+    /// whatever real folder the pointer had crossed before.
+    @Test("Every slice is distinguishable from every other")
+    func identitiesAreUnique() async throws {
+        // Two branches that each fold their own slivers, so there is more than
+        // one aggregated slice to tell apart — the whole point of the check.
+        let fixture = try Fixture()
+        for branch in ["gauche", "droite"] {
+            try fixture.file("\(branch)/gros.bin", bytes: 400_000)
+            for index in 0..<30 {
+                try fixture.file("\(branch)/menu\(index).bin", bytes: 200)
+            }
+        }
+        let store = await ScanEngine.scan(root: fixture.path).store
+
+        let arcs = SunburstLayout.build(
+            store: store, root: 0, useLogicalSize: false, minimumSweep: 0.05
+        )
+        #expect(arcs.filter(\.isOthers).count > 1)
+        #expect(Set(arcs.map(\.id)).count == arcs.count)
+    }
+
     @Test("Depth is capped at the requested ring count")
     func depthIsCapped() async throws {
         let store = try await fixture()

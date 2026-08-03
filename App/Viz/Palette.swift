@@ -84,7 +84,9 @@ struct OKLab {
 ///    19.3). Because slices are painted in slot order around the circle, visual
 ///    adjacency and slot adjacency are the same thing. The seam where the last
 ///    slice meets the first was checked too (ΔE 21.6 protan). A ninth sibling
-///    does not get a new hue — it folds into a neutral "others" slice.
+///    does not get a new hue — it is drawn in a neutral grey instead. Only
+///    slices too thin to see fold into "others": the eight-hue limit is about
+///    telling categories apart, never about hiding one.
 ///
 /// 2. **Depth is a sequential ramp on the branch's own hue**, so a whole subtree
 ///    reads as one family and the eye can follow it outward.
@@ -110,13 +112,6 @@ enum Palette {
 
     static let slotCount = 8
 
-    /// Slice that absorbs everything past the eighth sibling, plus all the
-    /// slivers too thin to draw. Deliberately colourless: it is not a category,
-    /// it is the absence of one.
-    static func otherColor(dark: Bool) -> Color {
-        dark ? Color(white: 0.42) : Color(white: 0.66)
-    }
-
     private static func base(slot: Int, dark: Bool) -> OKLab {
         let hexes = dark ? darkHexes : lightHexes
         return OKLab(hex: hexes[slot % hexes.count])
@@ -136,6 +131,16 @@ enum Palette {
     private static func siblingOffset(_ index: Int, ring: Int) -> Double {
         guard ring > 1 else { return 0 }
         return [0.0, 0.045, 0.022][index % 3]
+    }
+
+    /// Lightness spread for the neutral slices — the ninth sibling onward.
+    ///
+    /// Wider than the coloured nudge and applied on every ring, because grey is
+    /// all these have: without it a folder with twenty entries drew a dozen
+    /// identical grey wedges. There is no validated band to protect here, which
+    /// is exactly why the coloured version stays off the first ring.
+    private static func neutralOffset(_ index: Int) -> Double {
+        [0.0, 0.075, 0.037, 0.110][index % 4]
     }
 
     /// How much the outer rings drift from their base hue.
@@ -168,8 +173,8 @@ enum Palette {
         slot: Int, ring: Int, sibling: Int, dark: Bool, boost: Double
     ) -> Color {
         guard slot >= 0 else {
-            let grey = dark ? 0.42 : 0.66
-            return Color(white: grey + siblingOffset(sibling, ring: ring) + boost)
+            let grey = dark ? 0.40 : 0.62
+            return Color(white: grey + neutralOffset(sibling) + boost)
         }
         let base = base(slot: slot, dark: dark)
         let step = Double(max(0, ring - 1))
@@ -189,7 +194,7 @@ enum Palette {
         slot: Int, ring: Int, sibling: Int, dark: Bool
     ) -> Color {
         guard slot >= 0 else {
-            return Color(white: (dark ? 0.42 : 0.66) + siblingOffset(sibling, ring: ring) - 0.05)
+            return Color(white: (dark ? 0.40 : 0.62) + neutralOffset(sibling) - 0.05)
         }
         let base = base(slot: slot, dark: dark)
         let step = Double(max(0, ring - 1))

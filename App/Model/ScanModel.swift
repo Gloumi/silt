@@ -94,6 +94,13 @@ final class ScanModel {
     private(set) var trail: [Int32] = [0]
     var selection: Set<Int32> = []
 
+    /// Contents of an "others" slice the user has stepped into.
+    ///
+    /// Not part of the trail: an aggregated slice has no node of its own, so it
+    /// cannot be an index. It restricts what the visualisations show without
+    /// moving where we stand — going up from here simply drops it.
+    private(set) var othersScope: [Int32]?
+
     /// Children of the visible directory, largest first. Stored rather than
     /// computed: a directory can hold six figures of entries and re-sorting on
     /// every view update would be felt.
@@ -246,6 +253,7 @@ final class ScanModel {
         cache.removeAll { $0.path == path }
 
         trail = [0]
+        othersScope = nil
         rows = []
         selection = []
         result = nil
@@ -324,6 +332,7 @@ final class ScanModel {
         scanTask = nil
         junkTask?.cancel()
         trail = [0]
+        othersScope = nil
         rows = []
         selection = []
         partialStore = nil
@@ -378,16 +387,47 @@ final class ScanModel {
     func enter(_ node: Int32) {
         guard let store, store.isDirectory(node), store.childCount[Int(node)] > 0
         else { return }
+        // Entering something found inside an "others" slice leaves the slice
+        // behind: we are in a real folder now.
+        othersScope = nil
         trail.append(node)
         selection = []
         refreshRows()
     }
 
+    /// Steps into an aggregated slice, showing only what it stood for.
+    func enterOthers(_ nodes: [Int32]) {
+        guard !nodes.isEmpty else { return }
+        othersScope = nodes
+        selection = []
+        refreshRows()
+    }
+
     func goUp() {
+        // The slice is the innermost level, so it is what a step up leaves.
+        if othersScope != nil {
+            othersScope = nil
+            selection = []
+            refreshRows()
+            return
+        }
         guard trail.count > 1 else { return }
         trail.removeLast()
         selection = []
         refreshRows()
+    }
+
+    var canGoUp: Bool { othersScope != nil || trail.count > 1 }
+
+    /// Total of what an entered "others" slice holds, for the centre label.
+    var scopeSize: Int64 {
+        guard let othersScope else { return size(of: currentNode) }
+        return othersScope.reduce(0) { $0 + size(of: $1) }
+    }
+
+    var scopeFileCount: Int32 {
+        guard let othersScope, let store else { return 0 }
+        return othersScope.reduce(0) { $0 + store.fileCount[Int($1)] }
     }
 
     /// Navigates the tree to a node, opening every folder above it.
@@ -403,6 +443,7 @@ final class ScanModel {
             current = store.parent[Int(current)]
         }
         ancestors.append(0)
+        othersScope = nil
         trail = ancestors.reversed()
 
         // Standing *inside* a file is not a thing, and neither is standing
@@ -420,6 +461,7 @@ final class ScanModel {
     /// Jumps to a breadcrumb entry, dropping everything below it.
     func goTo(depth: Int) {
         guard depth >= 0, depth < trail.count - 1 else { return }
+        othersScope = nil
         trail.removeSubrange((depth + 1)...)
         selection = []
         refreshRows()
@@ -436,8 +478,13 @@ final class ScanModel {
     private func refreshRows() {
         treeVersion += 1
         guard let store else { rows = []; return }
-        rows = Signposts.measure("refreshRows") {
-            store.childrenSortedBySize(of: currentNode, useLogical: useLogicalSize)
+        if let othersScope {
+            // Already ordered largest first by the layout that built the slice.
+            rows = othersScope.filter { !store.flags[Int($0)].contains(.deleted) }
+        } else {
+            rows = Signposts.measure("refreshRows") {
+                store.childrenSortedBySize(of: currentNode, useLogical: useLogicalSize)
+            }
         }
         selection = selection.filter { !store.flags[Int($0)].contains(.deleted) }
     }

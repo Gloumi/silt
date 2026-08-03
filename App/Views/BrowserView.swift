@@ -214,8 +214,8 @@ private struct BreadcrumbBar: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(model.trail.count > 1 ? Color.accentColor : Color.secondary)
-            .disabled(model.trail.count <= 1)
+            .foregroundStyle(model.canGoUp ? Color.accentColor : Color.secondary)
+            .disabled(!model.canGoUp)
             .padding(.leading, 10)
             .help("Remonter d'un niveau")
 
@@ -264,7 +264,17 @@ private struct BreadcrumbBar: View {
                             .fontWeight(depth == model.trail.count - 1 ? .semibold : .regular)
                     }
                     .buttonStyle(.link)
-                    .disabled(depth == model.trail.count - 1)
+                    .disabled(depth == model.trail.count - 1 && model.othersScope == nil)
+                }
+
+                // An aggregated slice has no node, so it cannot be a trail
+                // entry — but standing inside one has to be visible somewhere,
+                // and the breadcrumb is where "where am I" is answered.
+                if let scope = model.othersScope {
+                    Image(systemName: "chevron.compact.right")
+                        .foregroundStyle(.tertiary)
+                    Text("Autres (\(scope.count))")
+                        .fontWeight(.semibold)
                 }
             }
             .padding(.vertical, 4)

@@ -17,8 +17,6 @@ struct SunburstView: View {
     /// Last size the layout was built for. The merge threshold is expressed in
     /// points, so the layout depends on it.
     @State private var lastSize: CGSize = .zero
-    /// Set when an "others" slice is opened, to list what it stands for.
-    @State private var othersArc: Arc?
     /// Geometry of the previous layout, keyed by node, used to animate a drill.
     @State private var previousGeometry: [Int32: Arc] = [:]
     @State private var transition: Double = 1
@@ -52,7 +50,11 @@ struct SunburstView: View {
                             innerRadius: metrics.innerRadius,
                             ringWidth: metrics.ringWidth
                         )
-                        if let node = hovered?.node { menuTarget = node }
+                        // Assigned even when nil: an aggregated slice has no
+                        // node, and keeping the previous one meant a context
+                        // menu opened on "others" still offered to trash
+                        // whatever folder the pointer crossed before it.
+                        menuTarget = hovered?.node
                     case .ended:
                         hovered = nil
                     }
@@ -105,9 +107,6 @@ struct SunburstView: View {
         // not on the number of rows: a folder reaches its final child count
         // almost immediately while the sizes behind them keep growing.
         .onChange(of: model.treeVersion) { rebuild(animated: false) }
-        .sheet(item: $othersArc) { arc in
-            OthersSheet(model: model, arc: arc) { othersArc = nil }
-        }
     }
 
     // MARK: - Layout lifecycle
@@ -133,6 +132,7 @@ struct SunburstView: View {
             SunburstLayout.build(
                 store: store,
                 root: model.currentNode,
+                children: model.othersScope,
                 maxRings: Self.maxRings,
                 useLogicalSize: model.useLogicalSize,
                 minimumSweep: minimumSweep(rings: rings)
@@ -252,9 +252,7 @@ struct SunburstView: View {
             let outerRadius = metrics.radius(ring: shape.ring, fraction: 1)
             let gap = Self.gapRadians(for: shape.sweep)
 
-            let isHovered = hovered.map {
-                $0.node == arc.node && $0.ring == arc.ring
-            } ?? false
+            let isHovered = hovered?.id == arc.id
             let isSelected = arc.node.map { model.selection.contains($0) } ?? false
 
             let outerColor = (isHovered || isSelected)
@@ -565,8 +563,9 @@ struct SunburstView: View {
             return
         }
         guard let node = arc.node else {
-            // The one slice that hides its contents now says what it hides.
-            if !arc.mergedNodes.isEmpty { othersArc = arc }
+            // Step into it, like any other slice. A list in a sheet answered
+            // the question but left the picture to do it.
+            if !arc.mergedNodes.isEmpty { model.enterOthers(arc.mergedNodes) }
             return
         }
         model.activate(node)
@@ -620,72 +619,6 @@ struct SunburstView: View {
     }
 }
 
-// MARK: - Others
-
-/// What an aggregated slice stands for.
-///
-/// The merge threshold keeps the chart readable, but it is also the only place
-/// where the picture stops telling the truth about what is there. This is the
-/// way back in.
-private struct OthersSheet: View {
-    let model: ScanModel
-    let arc: Arc
-    let onDismiss: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(arc.mergedCount) éléments trop petits pour être dessinés")
-                        .font(.headline)
-                    Text("\(Format.bytes(arc.size)) au total")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(16)
-
-            Divider()
-
-            List(rows, id: \.self) { node in
-                if let store = model.store {
-                    HStack(spacing: 8) {
-                        Image(systemName: store.isDirectory(node) ? "folder" : "doc")
-                            .foregroundStyle(.secondary)
-                        Text(store.name(of: node))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 12)
-                        Text(Format.bytes(model.size(of: node)))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(.rect)
-                    .onTapGesture {
-                        model.activate(node)
-                        onDismiss()
-                    }
-                }
-            }
-            .listStyle(.inset)
-
-            Divider()
-            HStack {
-                Spacer()
-                Button("Fermer", action: onDismiss)
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(12)
-        }
-        .frame(width: 420, height: 380)
-    }
-
-    /// Already sorted largest first by the layout; capped because an "others"
-    /// slice can stand for tens of thousands of entries and no one scrolls that.
-    private var rows: [Int32] { Array(arc.mergedNodes.prefix(200)) }
-}
-
 // MARK: - Overlays
 
 private struct CenterLabel: View {
@@ -695,15 +628,16 @@ private struct CenterLabel: View {
     var body: some View {
         VStack(spacing: 2) {
             if let store = model.store {
-                Text(store.name(of: model.currentNode))
+                Text(model.othersScope.map { "Autres (\($0.count))" }
+                     ?? store.name(of: model.currentNode))
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
-                Text(Format.bytes(model.size(of: model.currentNode)))
+                Text(Format.bytes(model.scopeSize))
                     .font(.system(size: 11))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                if model.trail.count > 1 {
+                if model.canGoUp {
                     Image(systemName: "chevron.up")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)

@@ -37,7 +37,10 @@ struct TreemapView: View {
                             hovered = TreemapLayout.hitTest(
                                 tiles: tiles, point: location
                             )
-                            if let node = hovered?.node { menuTarget = node }
+                            // Assigned even when nil — see the sunburst: an
+                            // aggregated tile has no node, and keeping the last
+                            // one aimed the context menu at the wrong folder.
+                            menuTarget = hovered?.node
                         case .ended:
                             hovered = nil
                         }
@@ -79,6 +82,7 @@ struct TreemapView: View {
         tiles = TreemapLayout.build(
             store: store,
             root: model.currentNode,
+            children: model.othersScope,
             in: CGRect(origin: .zero, size: size),
             maxDepth: Self.maxDepth,
             useLogicalSize: model.useLogicalSize
@@ -96,9 +100,7 @@ struct TreemapView: View {
             let rect = tile.rect.insetBy(dx: 1, dy: 1)
             guard rect.width > 0.5, rect.height > 0.5 else { continue }
 
-            let isHovered = hovered.map {
-                $0.node == tile.node && $0.depth == tile.depth
-            } ?? false
+            let isHovered = hovered?.id == tile.id
             let isSelected = tile.node.map { model.selection.contains($0) } ?? false
 
             let color = (isHovered || isSelected)
@@ -159,10 +161,15 @@ struct TreemapView: View {
     // MARK: - Interaction
 
     private func handleTap(at location: CGPoint) {
-        guard let tile = TreemapLayout.hitTest(tiles: tiles, point: location),
-              let node = tile.node
-        else {
+        guard let tile = TreemapLayout.hitTest(tiles: tiles, point: location) else {
             model.selection = []
+            return
+        }
+        guard let node = tile.node else {
+            // Step into it, exactly as the rings do — the two views share the
+            // scope, so one of them refusing to enter would contradict the
+            // breadcrumb the other just set.
+            if !tile.mergedNodes.isEmpty { model.enterOthers(tile.mergedNodes) }
             return
         }
         model.activate(node)
