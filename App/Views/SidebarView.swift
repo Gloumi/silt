@@ -11,22 +11,24 @@ struct SidebarView: View {
         List {
             Section("Volumes") {
                 ForEach(volumes) { volume in
-                    row(path: volume.url.path) { VolumeRow(volume: volume) }
-                }
-            }
-
-            Section("Emplacements") {
-                ForEach(locations) { location in
-                    row(path: location.path) {
-                        Label(location.name, systemImage: location.symbol)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    row(path: volume.url.path, name: volume.name) {
+                        VolumeRow(volume: volume)
                     }
                 }
             }
 
             Section {
+                ForEach(locations) { location in
+                    row(path: location.path, name: location.name) {
+                        Label(location.name, systemImage: location.symbol)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                // Added folders sit with the standard ones: to the user they
+                // are the same kind of thing, only one set happens to be
+                // removable.
                 ForEach(preferences.customLocations, id: \.self) { path in
-                    row(path: path) {
+                    row(path: path, name: QuickLocation.displayName(of: path)) {
                         Label(QuickLocation.displayName(of: path), systemImage: "folder")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -35,9 +37,12 @@ struct SidebarView: View {
                             preferences.removeLocation(path)
                             // Leaving the selection on a row that no longer
                             // exists would strand the window on it.
-                            if model.selectedRoot == path {
-                                model.selectedRoot = model.rootPath
-                                    ?? volumes.first?.url.path
+                            if model.selectedRoot == path,
+                               let fallback = volumes.first {
+                                model.select(
+                                    path: model.rootPath ?? fallback.url.path,
+                                    name: fallback.name
+                                )
                             }
                         }
                         Button("Afficher dans le Finder") {
@@ -48,15 +53,24 @@ struct SidebarView: View {
                     }
                 }
             } header: {
-                HStack {
-                    Text("Dossiers")
-                    Spacer()
+                HStack(spacing: 0) {
+                    Text("Emplacements")
+                    Spacer(minLength: 4)
+                    // Sized and coloured off the header itself, not left at the
+                    // body default — an oversized glyph beside small grey caps
+                    // reads as a stray control rather than part of the heading.
                     Button(action: addFolder) {
                         Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 18, height: 18)
                             .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    // Inset to sit off the edge by about what the title is
+                    // inset on the left, so the header reads as one line rather
+                    // than a title with something pinned to the window edge.
+                    .padding(.trailing, 8)
                     .help("Ajouter un dossier à la liste")
                 }
             }
@@ -67,8 +81,8 @@ struct SidebarView: View {
             // Open pointing at the boot volume, without scanning it. Starting a
             // multi-minute walk of the whole disk because someone opened the
             // app is not a decision to make on their behalf.
-            if model.selectedRoot == nil {
-                model.selectedRoot = volumes.first?.url.path ?? locations.first?.path
+            if model.selectedRoot == nil, let first = volumes.first {
+                model.select(path: first.url.path, name: first.name)
             }
         }
     }
@@ -82,7 +96,7 @@ struct SidebarView: View {
     /// is the system token for a selection that is present without claiming
     /// attention, the same grey the Finder's sidebar uses.
     private func row<Content: View>(
-        path: String, @ViewBuilder content: () -> Content
+        path: String, name: String, @ViewBuilder content: () -> Content
     ) -> some View {
         content()
             .padding(.horizontal, 7)
@@ -96,7 +110,7 @@ struct SidebarView: View {
             .contentShape(.rect)
             // Selects, never scans: reading a whole volume is a decision, not
             // a side effect of pointing at it.
-            .onTapGesture { model.select(path: path) }
+            .onTapGesture { model.select(path: path, name: name) }
             .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
     }
 
@@ -109,7 +123,7 @@ struct SidebarView: View {
         panel.message = "Choisissez un dossier à garder dans la liste."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         preferences.addLocation(url.path)
-        model.select(path: url.path)
+        model.select(path: url.path, name: QuickLocation.displayName(of: url.path))
     }
 }
 

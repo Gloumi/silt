@@ -171,7 +171,12 @@ final class ScanModel {
     /// What the sidebar points at, which is not the same as what has been
     /// scanned: the app opens with a volume highlighted and waits to be told to
     /// start, rather than seizing the disk on launch.
-    var selectedRoot: String?
+    private(set) var selectedRoot: String?
+    /// How the sidebar names it. Carried rather than re-derived so the prompt
+    /// calls the folder exactly what the row the user clicked calls it —
+    /// the system's display name says "Downloads" where the row says
+    /// "Téléchargements".
+    private(set) var selectedRootName: String?
 
     private struct CachedScan {
         let result: ScanResult
@@ -239,7 +244,10 @@ final class ScanModel {
         // Once it has finished, re-running it would only flash the same tree.
         // Keeps the sidebar highlight honest when a scan starts from somewhere
         // else — the Open panel, a drag onto the window.
-        selectedRoot = path
+        if selectedRoot != path {
+            selectedRoot = path
+            selectedRootName = QuickLocation.displayName(of: path)
+        }
 
         if !force, rootPath == path, isScanning || result != nil { return }
 
@@ -311,8 +319,9 @@ final class ScanModel {
     /// one is the user's call. Bringing back a tree we already hold is not an
     /// analysis either — it costs nothing and is what returning somewhere is
     /// supposed to feel like — so that case is honoured immediately.
-    func select(path: String) {
+    func select(path: String, name: String? = nil) {
         selectedRoot = path
+        selectedRootName = name ?? QuickLocation.displayName(of: path)
         guard path != rootPath,
               let index = cache.firstIndex(where: { $0.path == path })
         else { return }

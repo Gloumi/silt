@@ -361,26 +361,15 @@ private struct EmptyStateView: View {
         }
     }
 
-    /// What the button promises to scan, named the way the user would name it.
+    /// What the button promises to scan, named as the sidebar names it.
     ///
-    /// A volume root has no useful last path component — "/" is the whole boot
-    /// disk and reads as nothing at all — so volumes are asked for their name.
+    /// The previous version asked the URL whether it sat on the root file
+    /// system and used the volume's name if so — which is true of *every*
+    /// folder on the boot disk, so "/Applications" announced itself as
+    /// "Macintosh HD". The name now travels with the selection instead of
+    /// being re-derived from the path.
     private var target: String? {
-        guard let root = model.selectedRoot else { return nil }
-        if root == NSHomeDirectory() { return "votre dossier Départ" }
-
-        let url = URL(fileURLWithPath: root)
-        if let values = try? url.resourceValues(
-            forKeys: [.volumeNameKey, .volumeIsRootFileSystemKey]
-        ), let name = values.volumeName,
-           root == "/" || values.volumeIsRootFileSystem == true
-            || url.pathComponents.count <= 3 && root.hasPrefix("/Volumes/") {
-            return "« \(name) »"
-        }
-
-        let component = (root as NSString).lastPathComponent
-        return component.isEmpty || component == "/"
-            ? "ce volume" : "« \(component) »"
+        model.selectedRootName.map { "« \($0) »" }
     }
 }
 
