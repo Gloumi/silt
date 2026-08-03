@@ -34,23 +34,33 @@ struct CleanupView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if model.junkScope != nil { ScopeBanner(model: model) }
-            content
-        }
+        content
         // The rule engine runs when this view is first shown rather than at the
         // end of every scan — it walks the whole tree, and that used to block
         // the main actor exactly when the visualisation was trying to appear.
-        .task(id: model.scanID) { model.ensureJunkReport() }
+            .task(id: model.scanID) { model.ensureJunkReport() }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let report = model.junkReport {
+        // The tool always speaks about the whole disk. Until the disk is the
+        // tree in hand, the only honest thing to show is the way to read it.
+        if model.rootPath != "/" {
+            startState
+        } else if model.isScanning {
+            VStack(spacing: 10) {
+                ProgressView().controlSize(.large)
+                Text("Analyse du disque en cours…")
+                    .foregroundStyle(.secondary)
+                Button("Annuler") { model.cancel() }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let report = model.junkReport {
             if report.findings.isEmpty {
                 ContentUnavailableView(
                     "Rien à récupérer", systemImage: "sparkles",
-                    description: Text("Aucun cache ni artefact connu ici.")
+                    description: Text("Aucun cache ni artefact connu sur ce disque.")
                 )
             } else {
                 loaded(report)
@@ -63,10 +73,27 @@ struct CleanupView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ContentUnavailableView(
-                "Analyse en attente", systemImage: "wand.and.sparkles",
-                description: Text("Lancez un scan pour repérer les fichiers récupérables.")
-            )
+            // The disk walk was cancelled before yielding a tree, or failed.
+            startState
+        }
+    }
+
+    /// Same posture as the browsing views' "Prêt à analyser": nothing is read
+    /// until the user says so, and this is where they say it.
+    private var startState: some View {
+        ContentUnavailableView {
+            Label("Prêt à analyser", systemImage: "wand.and.sparkles")
+        } description: {
+            Text("Silt va parcourir le disque et repérer les caches et fichiers récupérables.")
+        } actions: {
+            Button {
+                model.scan(path: "/")
+            } label: {
+                Label("Démarrer l'analyse du disque", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
         }
     }
 
@@ -205,37 +232,6 @@ private struct CategorySection: Identifiable {
     var bytes: Int64 { groups.reduce(0) { $0 + $1.bytes } }
     var count: Int { groups.reduce(0) { $0 + $1.findings.count } }
     var nodes: [Int32] { groups.flatMap(\.nodes) }
-}
-
-// MARK: - Scope
-
-/// Shown when the list has been narrowed to one folder, because otherwise a
-/// short list looks like a clean machine rather than a filtered view.
-private struct ScopeBanner: View {
-    let model: ScanModel
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "scope").foregroundStyle(.secondary)
-            Text("Résultats pour ")
-                .foregroundStyle(.secondary)
-                + Text(shortPath).fontWeight(.medium)
-            Spacer()
-            Button("Analyser tout le disque") { model.clearJunkScope() }
-                .buttonStyle(.link)
-        }
-        .font(.callout)
-        .lineLimit(1)
-        .truncationMode(.head)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.quaternary.opacity(0.5))
-    }
-
-    private var shortPath: String {
-        (model.junkScopePath ?? "")
-            .replacingOccurrences(of: NSHomeDirectory(), with: "~")
-    }
 }
 
 // MARK: - Summary

@@ -16,7 +16,13 @@ struct BrowserView: View {
             // again under `.loaded` tore the whole subtree down at the end of
             // every scan. The visualisation lost its @State, blanked, and came
             // back a frame later — which is exactly what it looked like.
-            if model.needsScan {
+            if model.presentation == .cleanup {
+                // Cleanup is a destination, not a way of looking at the current
+                // folder: it owns its empty, scanning and loaded states, and
+                // the breadcrumb or "Prêt à analyser" would describe a place
+                // rather than what the tool is doing.
+                CleanupView(model: model)
+            } else if model.needsScan {
                 // The sidebar points somewhere unread. Showing the previous
                 // tree here would attach it to the wrong name.
                 EmptyStateView(model: model)
@@ -58,14 +64,14 @@ struct BrowserView: View {
                         SunburstView(model: model).padding(8)
                     case .treemap:
                         TreemapView(model: model).padding(6)
-                    case .list:
+                    // Cleanup never reaches here — the body branches to
+                    // CleanupView before this — but the switch must cover it.
+                    case .list, .cleanup:
                         entryList(store: store, parentSize: parentSize)
-                    case .cleanup:
-                        CleanupView(model: model)
                     }
                 }
                 // The middle takes whatever is left, whatever is in it. Without
-                // this an empty state — "Rien à récupérer", a filter matching
+                // this an empty state — "Dossier vide", a filter matching
                 // nothing — reports its intrinsic height, the stack shrinks to
                 // fit and both bars drift into the middle of the window.
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

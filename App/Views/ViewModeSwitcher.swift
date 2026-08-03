@@ -17,7 +17,7 @@ struct ViewModeSwitcher: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(ScanModel.Presentation.allCases) { mode in
+            ForEach(ScanModel.Presentation.browsing) { mode in
                 segment(mode)
             }
         }

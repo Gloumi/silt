@@ -74,6 +74,13 @@ struct SidebarView: View {
                     .help("Ajouter un dossier à la liste")
                 }
             }
+
+            Section("Outils") {
+                row(isSelected: model.showsCleanup, action: model.showCleanup) {
+                    Label("Nettoyage", systemImage: "wand.and.sparkles")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
         .listStyle(.sidebar)
         .task {
@@ -96,22 +103,35 @@ struct SidebarView: View {
     /// is the system token for a selection that is present without claiming
     /// attention, the same grey the Finder's sidebar uses.
     private func row<Content: View>(
-        path: String, name: String, @ViewBuilder content: () -> Content
+        isSelected: Bool, action: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
     ) -> some View {
         content()
             .padding(.horizontal, 7)
             .padding(.vertical, 5)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(model.selectedRoot == path
+                    .fill(isSelected
                           ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
                           : .clear)
             }
             .contentShape(.rect)
+            .onTapGesture(perform: action)
+            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+    }
+
+    /// A row that stands for a place. While Cleanup holds the window, no place
+    /// is what is on screen, so none of them gets the highlight.
+    private func row<Content: View>(
+        path: String, name: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        row(
+            isSelected: model.selectedRoot == path && !model.showsCleanup,
             // Selects, never scans: reading a whole volume is a decision, not
             // a side effect of pointing at it.
-            .onTapGesture { model.select(path: path, name: name) }
-            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+            action: { model.select(path: path, name: name) },
+            content: content
+        )
     }
 
     private func addFolder() {

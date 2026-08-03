@@ -20,6 +20,10 @@ final class ScanModel {
     enum Presentation: String, CaseIterable, Identifiable {
         case sunburst, treemap, list, cleanup
         var id: String { rawValue }
+
+        /// The three ways of looking at the tree. Cleanup is not one of them:
+        /// it is a destination of its own, reached from the sidebar.
+        static let browsing: [Presentation] = [.sunburst, .treemap, .list]
         var label: String {
             switch self {
             case .sunburst: "Anneaux"
@@ -115,8 +119,6 @@ final class ScanModel {
     private(set) var junkPhase: JunkPhase = .idle
     var junkSelection: Set<Int32> = []
     private var junkTask: Task<Void, Never>?
-    /// Subtree the cleanup list is confined to, or nil for the whole scan.
-    private(set) var junkScope: Int32?
 
     enum JunkPhase {
         case idle, running, ready
@@ -269,7 +271,6 @@ final class ScanModel {
         junkTask?.cancel()
         junkReport = nil
         junkPhase = .idle
-        junkScope = nil
         junkSelection = []
         lastDeletion = nil
         deletionMessage = nil
@@ -309,6 +310,10 @@ final class ScanModel {
                 // a scan, so the final tree agrees with the last snapshot and
                 // the view settles into it rather than flashing.
                 refreshRows()
+                // The Cleanup view sat out the scan showing its progress; its
+                // `.task` fired at scan *start*, when there was no tree yet, so
+                // the finished tree has to hand it the report itself.
+                if presentation == .cleanup, rootPath == "/" { rescanJunk() }
             }
         }
     }
@@ -322,6 +327,9 @@ final class ScanModel {
     func select(path: String, name: String? = nil) {
         selectedRoot = path
         selectedRootName = name ?? QuickLocation.displayName(of: path)
+        // Pointing at a place is asking to browse it: leave the cleanup list
+        // and give the sidebar highlight back to the location.
+        if presentation == .cleanup { presentation = lastBrowsingPresentation }
         guard path != rootPath,
               let index = cache.firstIndex(where: { $0.path == path })
         else { return }
@@ -365,6 +373,9 @@ final class ScanModel {
     }
 
     private func restore(_ entry: (path: String, scan: CachedScan), path: String) {
+        // A scan may still be running — leaving Cleanup mid-walk lands here —
+        // and letting it finish would drop its tree on top of the restored one.
+        scanTask?.cancel()
         scanTask = nil
         junkTask?.cancel()
         trail = [0]
@@ -374,7 +385,6 @@ final class ScanModel {
         partialStore = nil
         junkReport = nil
         junkPhase = .idle
-        junkScope = nil
         junkSelection = []
         lastDeletion = nil
         deletionMessage = nil
@@ -401,6 +411,8 @@ final class ScanModel {
             partialStore = nil
             phase = .loaded
             refreshRows()
+            // A cancelled scan still ends one: same hand-off as a finished scan.
+            if presentation == .cleanup, rootPath == "/" { rescanJunk() }
         } else {
             phase = .idle
             rows = []
@@ -725,34 +737,29 @@ final class ScanModel {
     /// Called by the Cleanup view when it appears. Computing the report is the
     /// view's own cost to pay, not the scan's.
     func ensureJunkReport() {
-        guard junkReport == nil, junkPhase != .running else { return }
+        // Only for the disk: the tool never reports on a lone folder. And not
+        // while scanning — the report would describe a partial tree, and the
+        // end of the scan hands over a fresh one anyway.
+        guard rootPath == "/", junkReport == nil, junkPhase != .running,
+              !isScanning
+        else { return }
         rescanJunk()
     }
 
-    /// "Clean this folder": confines the cleanup list to one subtree and shows
-    /// it. Home-relative rules stop matching outside the scope on their own, so
-    /// asking about a project folder cannot answer with `~/Library/Caches`.
-    func cleanFolder(_ node: Int32) {
-        junkScope = node
-        junkSelection = []
-        junkReport = nil
+    /// "Nettoyage" entry in the sidebar: the whole disk, every time.
+    ///
+    /// The tool is global by design — caches live under `~/Library`, `/Library`,
+    /// `/private` — so it only ever speaks about the boot volume. A disk still
+    /// in memory comes back for free; actually walking it stays behind the
+    /// "Démarrer l'analyse" button, like every other view.
+    func showCleanup() {
         presentation = .cleanup
-        rescanJunk()
+        if rootPath != "/", cache.contains(where: { $0.path == "/" }) {
+            scan(path: "/") // Cache hit: restored instantly, no walk starts.
+        }
     }
 
-    func clearJunkScope() {
-        guard junkScope != nil else { return }
-        junkScope = nil
-        junkSelection = []
-        junkReport = nil
-        rescanJunk()
-    }
-
-    /// Name of the folder the cleanup list is confined to, for the scope banner.
-    var junkScopePath: String? {
-        guard let junkScope, let store else { return nil }
-        return store.path(of: junkScope)
-    }
+    var showsCleanup: Bool { presentation == .cleanup }
 
     /// After a deletion or an undo. Only worth redoing if a report is already on
     /// screen — otherwise the next visit to the Cleanup view will build it.
@@ -773,11 +780,10 @@ final class ScanModel {
         }
         junkTask?.cancel()
         junkPhase = .running
-        let root = junkScope ?? 0
         junkTask = Task { [weak self] in
             let report = await Task.detached {
                 Signposts.measure("junkScan") {
-                    JunkScanner.scan(store: store, root: root)
+                    JunkScanner.scan(store: store, root: 0)
                 }
             }.value
             guard let self, !Task.isCancelled else { return }
