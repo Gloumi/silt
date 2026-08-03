@@ -18,18 +18,24 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, treemap, list, cleanup, reboot
+        case sunburst, treemap, list, largeFiles, cleanup, reboot
         var id: String { rawValue }
 
-        /// The three ways of looking at the tree. Cleanup and Reboot are not
+        /// The four ways of looking at the tree. Cleanup and Reboot are not
         /// among them: each is a destination of its own, reached from the
         /// sidebar.
-        static let browsing: [Presentation] = [.sunburst, .treemap, .list]
+        static let browsing: [Presentation] = [.sunburst, .treemap, .list, .largeFiles]
+
+        /// The three ways of *standing in* a folder. Large files browses the
+        /// tree like the others, but it is a flat extract of a whole subtree —
+        /// "show me where this lives" needs an actual tree view to land in.
+        static let treeViews: [Presentation] = [.sunburst, .treemap, .list]
         var label: String {
             switch self {
             case .sunburst: "Anneaux"
             case .treemap: "Blocs"
             case .list: "Liste"
+            case .largeFiles: "Fichiers volumineux"
             case .cleanup: "Nettoyage"
             case .reboot: "Redémarrage"
             }
@@ -39,6 +45,7 @@ final class ScanModel {
             case .sunburst: "chart.pie"
             case .treemap: "square.grid.2x2"
             case .list: "list.bullet"
+            case .largeFiles: "doc.text.magnifyingglass"
             case .cleanup: "wand.and.sparkles"
             case .reboot: "restart.circle"
             }
@@ -50,6 +57,7 @@ final class ScanModel {
             case .sunburst: "Anneaux — vue d'ensemble du dossier"
             case .treemap: "Blocs — surface proportionnelle à la taille"
             case .list: "Liste — éléments triés par taille"
+            case .largeFiles: "Fichiers volumineux — les plus gros du dossier et de ses sous-dossiers"
             case .cleanup: "Nettoyage — caches et fichiers récupérables"
             case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
             }
@@ -69,14 +77,14 @@ final class ScanModel {
 
     var presentation: Presentation = .sunburst {
         didSet {
-            if Presentation.browsing.contains(presentation) {
+            if Presentation.treeViews.contains(presentation) {
                 lastBrowsingPresentation = presentation
             }
         }
     }
-    /// Where "show me where this lives" should land. Cleanup and Reboot are
-    /// lists of findings, not places in the tree, so neither can ever be that
-    /// destination.
+    /// Where "show me where this lives" should land. Cleanup, Reboot and the
+    /// large-files extract are lists of findings, not places in the tree, so
+    /// none of them can ever be that destination.
     private var lastBrowsingPresentation: Presentation = .sunburst
 
     /// Increments once per scan. Node indices only mean anything within a
@@ -129,6 +137,39 @@ final class ScanModel {
 
     enum JunkPhase {
         case idle, running, ready
+    }
+
+    /// Biggest files under the directory on screen, largest first.
+    ///
+    /// Computed lazily when the Files view asks, like the junk report, and for
+    /// the same reason: it walks a whole subtree, and that cost belongs to the
+    /// view that wants it, never to the end of a scan.
+    private(set) var largeFiles: [Int32]?
+    private(set) var largeFilesPhase: LargeFilesPhase = .idle
+    private var largeFilesTask: Task<Void, Never>?
+
+    enum LargeFilesPhase {
+        case idle, running, ready
+    }
+
+    /// Everything the large-files extract depends on, folded into one value the
+    /// view can key its `.task` on: any change recomputes, anything else does
+    /// not. Navigation, deletion, undo and the size toggle all pass through
+    /// `refreshRows`, so `treeVersion` carries most of the weight.
+    struct LargeFilesKey: Hashable {
+        var scanID: Int
+        var treeVersion: Int
+        var node: Int32
+        var useLogical: Bool
+        var scanning: Bool
+    }
+
+    var largeFilesKey: LargeFilesKey {
+        LargeFilesKey(
+            scanID: scanID, treeVersion: treeVersion,
+            node: currentNode, useLogical: useLogicalSize,
+            scanning: isScanning
+        )
     }
 
     /// Set while the uninstall sheet is up, and while it is being built.
@@ -282,6 +323,9 @@ final class ScanModel {
         junkReport = nil
         junkPhase = .idle
         junkSelection = []
+        largeFilesTask?.cancel()
+        largeFiles = nil
+        largeFilesPhase = .idle
         lastDeletion = nil
         deletionMessage = nil
         scanID += 1
@@ -398,6 +442,9 @@ final class ScanModel {
         junkReport = nil
         junkPhase = .idle
         junkSelection = []
+        largeFilesTask?.cancel()
+        largeFiles = nil
+        largeFilesPhase = .idle
         lastDeletion = nil
         deletionMessage = nil
         scanID += 1
@@ -871,6 +918,40 @@ final class ScanModel {
             junkReport = report
             junkPhase = .ready
             junkSelection = junkSelection.intersection(Set(report.findings.map(\.node)))
+        }
+    }
+
+    // MARK: - Large files
+
+    /// Called by the Files view when it appears and whenever its key changes.
+    ///
+    /// Not while scanning — the extract would describe a partial tree, and the
+    /// key changes once more when the scan settles, which lands back here.
+    /// Runs off the main actor exactly like `rescanJunk`, and for the same
+    /// `NodeStore`-is-Sendable reason.
+    func ensureLargeFiles() {
+        guard presentation == .largeFiles, !isScanning, let store else {
+            largeFilesTask?.cancel()
+            largeFiles = nil
+            largeFilesPhase = .idle
+            return
+        }
+        largeFilesTask?.cancel()
+        largeFilesPhase = .running
+        let node = currentNode
+        let useLogical = useLogicalSize
+        let id = scanID
+        largeFilesTask = Task { [weak self] in
+            let top = await Task.detached {
+                Signposts.measure("largestFiles") {
+                    LargestFiles.top(in: store, under: node, useLogical: useLogical)
+                }
+            }.value
+            // Indices only mean anything within the store they came from: a
+            // result computed against the previous scan must die here.
+            guard let self, !Task.isCancelled, self.scanID == id else { return }
+            largeFiles = top
+            largeFilesPhase = .ready
         }
     }
 

@@ -67,6 +67,8 @@ struct BrowserView: View {
                         SunburstView(model: model).padding(8)
                     case .treemap:
                         TreemapView(model: model).padding(6)
+                    case .largeFiles:
+                        LargeFilesView(model: model, store: store)
                     // The tools never reach here — the body branches to their
                     // views before this — but the switch must cover them.
                     case .list, .cleanup, .reboot:
