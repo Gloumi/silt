@@ -88,14 +88,33 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .task {
-            volumes = Volumes.mounted()
+            refreshVolumes()
             // Open pointing at the boot volume, without scanning it. Starting a
             // multi-minute walk of the whole disk because someone opened the
             // app is not a decision to make on their behalf.
             if model.selectedRoot == nil, let first = volumes.first {
                 model.select(path: first.url.path, name: first.name)
             }
+            // The gauges must track what other apps do to the disk, and no
+            // notification covers "some process wrote or freed bytes" — so a
+            // slow poll, tied to the view's lifetime.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                refreshVolumes()
+            }
         }
+        // Freeing space in the app should move the gauge now, not within 30 s.
+        .onChange(of: model.deletionEpoch) { refreshVolumes() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didMountNotification
+        )) { _ in refreshVolumes() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didUnmountNotification
+        )) { _ in refreshVolumes() }
+    }
+
+    private func refreshVolumes() {
+        volumes = Volumes.mounted()
     }
 
     /// One selectable row.
