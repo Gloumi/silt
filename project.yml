@@ -32,6 +32,14 @@ targets:
         NSHumanReadableCopyright: MIT licensed. Copyright © 2026 Renan Gautier.
         NSSupportsAutomaticTermination: true
         NSSupportsSuddenTermination: true
+        # Emptying the trash is delegated to the Finder over Apple events.
+        NSAppleEventsUsageDescription: >-
+          Silt demande au Finder de vider la corbeille lorsque vous
+          cliquez sur « Vider la corbeille ».
+    entitlements:
+      path: App/Silt.entitlements
+      properties:
+        com.apple.security.automation.apple-events: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.silt.mac

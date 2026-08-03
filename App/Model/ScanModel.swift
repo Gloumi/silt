@@ -679,6 +679,37 @@ final class ScanModel {
 
     func dismissDeletionMessage() { deletionMessage = nil }
 
+    /// Empties the trash through the Finder: it owns the per-volume trash
+    /// folders and their "put back" records, and TCC would deny us direct
+    /// access to `~/.Trash` anyway.
+    func emptyTrash() async {
+        deletionMessage = "Vidage de la corbeille…"
+        let success = await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = [
+                "-e", "tell application \"Finder\" to empty trash",
+            ]
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus == 0
+            } catch {
+                return false
+            }
+        }.value
+        if success {
+            // The trashed items are gone for good; keeping the undo around
+            // would offer a restoration that cannot happen.
+            lastDeletion = nil
+            undoSizes = [:]
+            deletionMessage = "Corbeille vidée."
+            deletionEpoch += 1
+        } else {
+            deletionMessage = "Le Finder n'a pas pu vider la corbeille."
+        }
+    }
+
     /// Space opens a preview of the inspected item, and closes it again.
     /// Directories have nothing to preview, so they are ignored rather than
     /// opening an empty panel.
@@ -880,7 +911,7 @@ final class ScanModel {
         if !report.trashed.isEmpty {
             let bytes = report.reclaimedBytes.formatted(.byteCount(style: .file))
             parts.append(
-                "\(report.trashed.count) élément(s) à la corbeille — \(bytes) libérés."
+                "\(report.trashed.count) élément(s) à la corbeille — \(bytes) purgeables."
             )
         }
         if !report.refused.isEmpty {

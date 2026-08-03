@@ -107,6 +107,7 @@ struct ContentView: View {
                 DeletionBanner(
                     message: message,
                     canUndo: model.lastDeletion != nil,
+                    onEmptyTrash: { Task { await model.emptyTrash() } },
                     onUndo: { Task { await model.undoLastDeletion() } },
                     onDismiss: { model.dismissDeletionMessage() }
                 )
@@ -161,6 +162,7 @@ struct ContentView: View {
 private struct DeletionBanner: View {
     let message: String
     let canUndo: Bool
+    let onEmptyTrash: () -> Void
     let onUndo: () -> Void
     let onDismiss: () -> Void
 
@@ -172,6 +174,7 @@ private struct DeletionBanner: View {
                 .font(.callout)
             Spacer(minLength: 8)
             if canUndo {
+                Button("Vider la corbeille", action: onEmptyTrash)
                 Button("Annuler", action: onUndo)
             }
             Button {
