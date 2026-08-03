@@ -18,11 +18,12 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, treemap, list, cleanup
+        case sunburst, treemap, list, cleanup, reboot
         var id: String { rawValue }
 
-        /// The three ways of looking at the tree. Cleanup is not one of them:
-        /// it is a destination of its own, reached from the sidebar.
+        /// The three ways of looking at the tree. Cleanup and Reboot are not
+        /// among them: each is a destination of its own, reached from the
+        /// sidebar.
         static let browsing: [Presentation] = [.sunburst, .treemap, .list]
         var label: String {
             switch self {
@@ -30,6 +31,7 @@ final class ScanModel {
             case .treemap: "Blocs"
             case .list: "Liste"
             case .cleanup: "Nettoyage"
+            case .reboot: "Redémarrage"
             }
         }
         var symbol: String {
@@ -38,6 +40,7 @@ final class ScanModel {
             case .treemap: "square.grid.2x2"
             case .list: "list.bullet"
             case .cleanup: "wand.and.sparkles"
+            case .reboot: "restart.circle"
             }
         }
 
@@ -48,6 +51,7 @@ final class ScanModel {
             case .treemap: "Blocs — surface proportionnelle à la taille"
             case .list: "Liste — éléments triés par taille"
             case .cleanup: "Nettoyage — caches et fichiers récupérables"
+            case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
             }
         }
     }
@@ -65,11 +69,14 @@ final class ScanModel {
 
     var presentation: Presentation = .sunburst {
         didSet {
-            if presentation != .cleanup { lastBrowsingPresentation = presentation }
+            if Presentation.browsing.contains(presentation) {
+                lastBrowsingPresentation = presentation
+            }
         }
     }
-    /// Where "show me where this lives" should land. Cleanup is a list of
-    /// findings, not a place in the tree, so it can never be that destination.
+    /// Where "show me where this lives" should land. Cleanup and Reboot are
+    /// lists of findings, not places in the tree, so neither can ever be that
+    /// destination.
     private var lastBrowsingPresentation: Presentation = .sunburst
 
     /// Increments once per scan. Node indices only mean anything within a
@@ -151,6 +158,9 @@ final class ScanModel {
     var deletionPlanBox: PlanBox?
     /// Last successful deletion, kept so it can be undone.
     private(set) var lastDeletion: DeletionReport?
+    /// Bumped after every confirmed deletion and every undo, so tools that
+    /// measure the disk outside the tree know to look again.
+    private(set) var deletionEpoch = 0
     private(set) var deletionMessage: String?
     /// Sizes captured before deletion; undo needs them to restore the roll-up.
     private var undoSizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
@@ -327,9 +337,11 @@ final class ScanModel {
     func select(path: String, name: String? = nil) {
         selectedRoot = path
         selectedRootName = name ?? QuickLocation.displayName(of: path)
-        // Pointing at a place is asking to browse it: leave the cleanup list
-        // and give the sidebar highlight back to the location.
-        if presentation == .cleanup { presentation = lastBrowsingPresentation }
+        // Pointing at a place is asking to browse it: leave whichever tool
+        // holds the window and give the sidebar highlight back to the location.
+        if !Presentation.browsing.contains(presentation) {
+            presentation = lastBrowsingPresentation
+        }
         guard path != rootPath,
               let index = cache.firstIndex(where: { $0.path == path })
         else { return }
@@ -569,8 +581,35 @@ final class ScanModel {
         deletionPlan = plan
     }
 
+    /// Builds a plan from paths that were never part of any scanned tree —
+    /// the Reboot tool measures /private/var/folders itself, scan or no scan.
+    func requestDeletion(outOfTree items: [(name: String, path: String, bytes: Int64)]) {
+        guard !items.isEmpty else { return }
+        var plan = DeletionPlan(
+            requests: [], names: [], totalBytes: 0, cautions: [], refused: []
+        )
+
+        for item in items {
+            let verdict = DenyList.verdict(for: item.path)
+            if case .forbidden(let reason) = verdict {
+                plan.refused.append("\(item.name) — \(reason)")
+                continue
+            }
+            if case .caution(let reason) = verdict {
+                plan.cautions.append("\(item.name) — \(reason)")
+            }
+            plan.requests.append(.init(node: nil, path: item.path, bytes: item.bytes))
+            plan.names.append(item.name)
+            plan.totalBytes += item.bytes
+        }
+
+        guard !plan.requests.isEmpty || !plan.refused.isEmpty else { return }
+        deletionPlan = plan
+    }
+
     func confirmDeletion() async {
-        guard let plan = deletionPlan, let store else { return }
+        // No store guard: an out-of-tree plan is deletable before any scan.
+        guard let plan = deletionPlan else { return }
         deletionPlan = nil
 
         // Capture sizes first: markDeleted zeroes them, and undo needs them.
@@ -578,13 +617,15 @@ final class ScanModel {
         // have no node, and feeding a made-up index to the roll-up would corrupt
         // every ancestor's total.
         var sizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
-        for request in plan.requests {
-            guard let node = request.node else { continue }
-            let index = Int(node)
-            sizes[node] = (
-                store.totalAlloc[index], store.totalLogical[index],
-                store.fileCount[index]
-            )
+        if let store {
+            for request in plan.requests {
+                guard let node = request.node else { continue }
+                let index = Int(node)
+                sizes[node] = (
+                    store.totalAlloc[index], store.totalLogical[index],
+                    store.fileCount[index]
+                )
+            }
         }
 
         let requests = plan.requests
@@ -605,6 +646,7 @@ final class ScanModel {
         deletionMessage = summary(of: report)
         selection = []
         junkSelection = []
+        deletionEpoch += 1
         refreshRows()
         refreshJunkIfShown()
     }
@@ -630,6 +672,7 @@ final class ScanModel {
         deletionMessage = failures.isEmpty
             ? "Restauration effectuée."
             : "\(failures.count) élément(s) n'ont pas pu être restaurés."
+        deletionEpoch += 1
         refreshRows()
         refreshJunkIfShown()
     }
@@ -728,6 +771,7 @@ final class ScanModel {
         lastDeletion = report.trashed.isEmpty ? nil : report
         deletionMessage = summary(of: report)
         selection = []
+        deletionEpoch += 1
         refreshRows()
         refreshJunkIfShown()
     }
@@ -760,6 +804,12 @@ final class ScanModel {
     }
 
     var showsCleanup: Bool { presentation == .cleanup }
+
+    /// "Redémarrage" entry in the sidebar. Unlike Cleanup it never scans:
+    /// its two measurements are targeted and independent of any tree.
+    func showReboot() { presentation = .reboot }
+
+    var showsReboot: Bool { presentation == .reboot }
 
     /// After a deletion or an undo. Only worth redoing if a report is already on
     /// screen — otherwise the next visit to the Cleanup view will build it.

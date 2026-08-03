@@ -58,6 +58,28 @@ struct DenyListTests {
         }
     }
 
+    @Test("/private/var/folders is protected except the user's own cache and temp")
+    func varFoldersHardened() throws {
+        for path in [
+            "/private/var/folders", "/private/var/folders/ab",
+            "/private/var/folders/ab/hash", "/var/folders/ab/hash/0",
+        ] {
+            #expect(DenyList.verdict(for: path).isForbidden, "\(path) devrait être refusé")
+        }
+        let cache = try #require(SystemPaths.darwinUserCache)
+        #expect(DenyList.verdict(for: cache).isForbidden)
+        #expect(DenyList.verdict(for: cache + "/com.apple.Safari") == .allowed)
+        // The short /var spelling has to land on the same verdicts.
+        let short = String(cache.dropFirst("/private".count))
+        #expect(DenyList.verdict(for: short + "/com.apple.Safari") == .allowed)
+        let temp = try #require(SystemPaths.darwinUserTemp)
+        #expect(DenyList.verdict(for: temp).isForbidden)
+        if case .caution = DenyList.verdict(for: temp + "/scratch") {} else {
+            Issue.record("le dossier temporaire devrait avertir")
+        }
+        #expect(DenyList.verdict(for: "/private/var/vm/swapfile0").isForbidden)
+    }
+
     @Test("Ordinary junk is allowed without ceremony")
     func ordinaryPathsAllowed() {
         let home = NSHomeDirectory()

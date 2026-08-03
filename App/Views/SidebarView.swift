@@ -80,6 +80,10 @@ struct SidebarView: View {
                     Label("Nettoyage", systemImage: "wand.and.sparkles")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                row(isSelected: model.showsReboot, action: model.showReboot) {
+                    Label("Redémarrage", systemImage: "restart.circle")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .listStyle(.sidebar)
@@ -120,13 +124,14 @@ struct SidebarView: View {
             .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
     }
 
-    /// A row that stands for a place. While Cleanup holds the window, no place
+    /// A row that stands for a place. While a tool holds the window, no place
     /// is what is on screen, so none of them gets the highlight.
     private func row<Content: View>(
         path: String, name: String, @ViewBuilder content: () -> Content
     ) -> some View {
         row(
-            isSelected: model.selectedRoot == path && !model.showsCleanup,
+            isSelected: model.selectedRoot == path
+                && ScanModel.Presentation.browsing.contains(model.presentation),
             // Selects, never scans: reading a whole volume is a decision, not
             // a side effect of pointing at it.
             action: { model.select(path: path, name: name) },

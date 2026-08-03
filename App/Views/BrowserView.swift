@@ -6,6 +6,7 @@ import SwiftUI
 /// this stays as the precise, keyboard-friendly counterpart.
 struct BrowserView: View {
     let model: ScanModel
+    let reboot: RebootModel
 
     var body: some View {
         Group {
@@ -22,6 +23,8 @@ struct BrowserView: View {
                 // the breadcrumb or "Prêt à analyser" would describe a place
                 // rather than what the tool is doing.
                 CleanupView(model: model)
+            } else if model.presentation == .reboot {
+                RebootView(model: model, reboot: reboot)
             } else if model.needsScan {
                 // The sidebar points somewhere unread. Showing the previous
                 // tree here would attach it to the wrong name.
@@ -64,9 +67,9 @@ struct BrowserView: View {
                         SunburstView(model: model).padding(8)
                     case .treemap:
                         TreemapView(model: model).padding(6)
-                    // Cleanup never reaches here — the body branches to
-                    // CleanupView before this — but the switch must cover it.
-                    case .list, .cleanup:
+                    // The tools never reach here — the body branches to their
+                    // views before this — but the switch must cover them.
+                    case .list, .cleanup, .reboot:
                         entryList(store: store, parentSize: parentSize)
                     }
                 }

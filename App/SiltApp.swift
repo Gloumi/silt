@@ -63,13 +63,16 @@ struct SiltApp: App {
 struct ContentView: View {
     let model: ScanModel
     @State private var showsInspector = true
+    /// Owned here rather than by ScanModel: the reboot measurement has
+    /// nothing to do with the scan lifecycle and survives all its resets.
+    @State private var reboot = RebootModel()
 
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
         } detail: {
-            BrowserView(model: model)
+            BrowserView(model: model, reboot: reboot)
         }
         .inspector(isPresented: $showsInspector) {
             InspectorView(model: model)

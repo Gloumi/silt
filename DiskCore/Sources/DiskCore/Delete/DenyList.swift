@@ -106,6 +106,23 @@ public enum DenyList {
             }
         }
 
+        // /private/var/folders is the system's per-user working area. Only the
+        // current user's own cache dir holds things safe to remove now; the
+        // temp dir is deletable but may be in live use; everything else — the
+        // hash dirs, the C/T/0 dirs themselves, other users' trees — is off
+        // limits. If confstr failed, the whole area fails closed.
+        if isUnder(path, "/private/var/folders") {
+            if let cache = SystemPaths.darwinUserCache,
+               path != cache, isUnder(path, cache) {
+                return .allowed
+            }
+            if let temp = SystemPaths.darwinUserTemp,
+               path != temp, isUnder(path, temp) {
+                return .caution("Fichiers temporaires — des applications ouvertes peuvent encore les utiliser.")
+            }
+            return .forbidden("Dossiers de travail du système, régénérés par macOS.")
+        }
+
         // /usr/local is the exception inside /usr — it is where Homebrew and
         // hand-installed tools live, and is legitimately user-managed.
         if isUnder(path, "/usr/local") {
