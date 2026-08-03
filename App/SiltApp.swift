@@ -66,6 +66,10 @@ struct ContentView: View {
     /// Owned here rather than by ScanModel: the reboot measurement has
     /// nothing to do with the scan lifecycle and survives all its resets.
     @State private var reboot = RebootModel()
+    /// Token for the space-key monitor, held so reopening the window never
+    /// installs a second one — two monitors would toggle the preview twice,
+    /// which is to say not at all.
+    @State private var spaceMonitor: Any?
 
     var body: some View {
         NavigationSplitView {
@@ -151,6 +155,49 @@ struct ContentView: View {
             }
             return true
         }
+        // Space is Quick Look everywhere on this platform, but the menu
+        // command's key equivalent never fires: every list lives in an
+        // NSScrollView, which swallows space as page-down before the menu is
+        // consulted. A local monitor sees the event first.
+        .onAppear {
+            guard spaceMonitor == nil else { return }
+            spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // The monitor already runs on the main thread; the hop is only
+                // formal. A Bool crosses it where the non-Sendable event cannot.
+                let consumed = MainActor.assumeIsolated { handleSpace(event) == nil }
+                return consumed ? nil : event
+            }
+        }
+        .onDisappear {
+            if let spaceMonitor { NSEvent.removeMonitor(spaceMonitor) }
+            spaceMonitor = nil
+        }
+    }
+
+    /// Returns nil to consume the event, or the event to let it through.
+    private func handleSpace(_ event: NSEvent) -> NSEvent? {
+        guard event.keyCode == 49, // space
+              event.modifierFlags
+                  .intersection([.command, .shift, .option, .control]).isEmpty,
+              let window = NSApp.keyWindow,
+              !(window is NSPanel), // Open panel, Settings: not our keyboard
+              !(window.firstResponder is NSTextView) // typing in a filter field
+        else { return event }
+
+        if window.isSheet {
+            // One sheet at a time, so a non-nil preview URL means this sheet
+            // *is* the Quick Look one: space closes it, like the Finder. Any
+            // other sheet keeps its own keyboard handling.
+            guard model.previewURL != nil else { return event }
+            model.previewURL = nil
+            return nil
+        }
+
+        // Only swallow the key when a preview actually toggles; otherwise the
+        // scroll views keep their page-down.
+        let before = model.previewURL
+        model.togglePreview()
+        return model.previewURL != before ? nil : event
     }
 }
 
