@@ -50,10 +50,17 @@ struct QuickLocation: Identifiable, Hashable {
     let symbol: String
     var id: String { path }
 
+    /// The name the Finder shows for a folder, which for the home directory is
+    /// the account's own name rather than the generic "Départ".
+    static func displayName(of path: String) -> String {
+        let name = FileManager.default.displayName(atPath: path)
+        return name.isEmpty ? (path as NSString).lastPathComponent : name
+    }
+
     static func standard() -> [QuickLocation] {
         let home = NSHomeDirectory()
         let candidates = [
-            QuickLocation(name: "Départ", path: home, symbol: "house"),
+            QuickLocation(name: displayName(of: home), path: home, symbol: "house"),
             QuickLocation(
                 name: "Téléchargements", path: home + "/Downloads",
                 symbol: "arrow.down.circle"

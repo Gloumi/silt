@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 struct SidebarView: View {
     let model: ScanModel
     @State private var volumes: [VolumeInfo] = []
+    @Bindable private var preferences = Preferences.shared
     private let locations = QuickLocation.standard()
 
     var body: some View {
@@ -19,6 +21,43 @@ struct SidebarView: View {
                         Label(location.name, systemImage: location.symbol)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                }
+            }
+
+            Section {
+                ForEach(preferences.customLocations, id: \.self) { path in
+                    row(path: path) {
+                        Label(QuickLocation.displayName(of: path), systemImage: "folder")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contextMenu {
+                        Button("Retirer de la liste") {
+                            preferences.removeLocation(path)
+                            // Leaving the selection on a row that no longer
+                            // exists would strand the window on it.
+                            if model.selectedRoot == path {
+                                model.selectedRoot = model.rootPath
+                                    ?? volumes.first?.url.path
+                            }
+                        }
+                        Button("Afficher dans le Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [URL(fileURLWithPath: path)]
+                            )
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("Dossiers")
+                    Spacer()
+                    Button(action: addFolder) {
+                        Image(systemName: "plus")
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Ajouter un dossier à la liste")
                 }
             }
         }
@@ -55,8 +94,22 @@ struct SidebarView: View {
                           : .clear)
             }
             .contentShape(.rect)
-            .onTapGesture { model.scan(path: path) }
+            // Selects, never scans: reading a whole volume is a decision, not
+            // a side effect of pointing at it.
+            .onTapGesture { model.select(path: path) }
             .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+    }
+
+    private func addFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Ajouter"
+        panel.message = "Choisissez un dossier à garder dans la liste."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        preferences.addLocation(url.path)
+        model.select(path: url.path)
     }
 }
 

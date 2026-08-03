@@ -16,7 +16,11 @@ struct BrowserView: View {
             // again under `.loaded` tore the whole subtree down at the end of
             // every scan. The visualisation lost its @State, blanked, and came
             // back a frame later — which is exactly what it looked like.
-            if model.store != nil {
+            if model.needsScan {
+                // The sidebar points somewhere unread. Showing the previous
+                // tree here would attach it to the wrong name.
+                EmptyStateView(model: model)
+            } else if model.store != nil {
                 loadedContent.overlay(alignment: .top) {
                     // The tree is already worth looking at — show it growing,
                     // with the counters demoted to a strip.
@@ -344,9 +348,9 @@ private struct EmptyStateView: View {
                 Text("Choisissez un volume ou un emplacement dans la barre latérale.")
             }
         } actions: {
-            if let root = model.selectedRoot {
+            if model.selectedRoot != nil {
                 Button {
-                    model.scan(path: root, force: true)
+                    model.startSelectedScan()
                 } label: {
                     Label("Démarrer l'analyse", systemImage: "play.fill")
                 }

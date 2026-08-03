@@ -38,6 +38,26 @@ final class Preferences {
         static let collapseDependencies = "collapseDependencies"
         static let seenWelcome = "hasSeenWelcome"
         static let appearance = "appearance"
+        static let customLocations = "customLocations"
+    }
+
+    /// Folders the user pinned to the sidebar, in the order they added them.
+    ///
+    /// Plain paths rather than security-scoped bookmarks: the app is not
+    /// sandboxed, so a path is all it takes to read one back.
+    private(set) var customLocations: [String] {
+        didSet {
+            UserDefaults.standard.set(customLocations, forKey: Key.customLocations)
+        }
+    }
+
+    func addLocation(_ path: String) {
+        guard !customLocations.contains(path) else { return }
+        customLocations.append(path)
+    }
+
+    func removeLocation(_ path: String) {
+        customLocations.removeAll { $0 == path }
     }
 
     /// Applied to `NSApp` rather than through `preferredColorScheme`, which
@@ -76,6 +96,7 @@ final class Preferences {
         hasSeenWelcome = defaults.bool(forKey: Key.seenWelcome)
         appearance = defaults.string(forKey: Key.appearance)
             .flatMap(AppearanceSetting.init(rawValue:)) ?? .system
+        customLocations = defaults.stringArray(forKey: Key.customLocations) ?? []
     }
 
     /// Scan options matching the current preferences.

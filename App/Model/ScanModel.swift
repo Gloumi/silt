@@ -305,6 +305,33 @@ final class ScanModel {
         }
     }
 
+    /// Points the window at a root without reading anything.
+    ///
+    /// Selecting is not analysing: a whole-disk walk takes minutes and starting
+    /// one is the user's call. Bringing back a tree we already hold is not an
+    /// analysis either — it costs nothing and is what returning somewhere is
+    /// supposed to feel like — so that case is honoured immediately.
+    func select(path: String) {
+        selectedRoot = path
+        guard path != rootPath,
+              let index = cache.firstIndex(where: { $0.path == path })
+        else { return }
+        stashCurrentScan()
+        restore(cache.remove(at: index), path: path)
+    }
+
+    /// True when the sidebar points somewhere that has not been analysed.
+    var needsScan: Bool {
+        guard let selectedRoot else { return false }
+        return selectedRoot != rootPath
+    }
+
+    /// Starts the analysis the selection is waiting on.
+    func startSelectedScan() {
+        guard let selectedRoot else { return }
+        scan(path: selectedRoot)
+    }
+
     /// Re-scans the current root from disk, discarding what is on screen.
     func rescan() {
         guard let rootPath else { return }
