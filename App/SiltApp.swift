@@ -111,6 +111,7 @@ struct ContentView: View {
                 DeletionBanner(
                     message: message,
                     canUndo: model.lastDeletion != nil,
+                    needsAppManagement: model.needsAppManagement,
                     onEmptyTrash: { Task { await model.emptyTrash() } },
                     onUndo: { Task { await model.undoLastDeletion() } },
                     onDismiss: { model.dismissDeletionMessage() }
@@ -209,6 +210,7 @@ struct ContentView: View {
 private struct DeletionBanner: View {
     let message: String
     let canUndo: Bool
+    let needsAppManagement: Bool
     let onEmptyTrash: () -> Void
     let onUndo: () -> Void
     let onDismiss: () -> Void
@@ -220,6 +222,9 @@ private struct DeletionBanner: View {
             Text(message)
                 .font(.callout)
             Spacer(minLength: 8)
+            if needsAppManagement {
+                Button("Ouvrir les Réglages") { AppManagement.openSettings() }
+            }
             if canUndo {
                 Button("Vider la corbeille", action: onEmptyTrash)
                 Button("Annuler", action: onUndo)

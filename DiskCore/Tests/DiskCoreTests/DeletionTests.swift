@@ -213,3 +213,20 @@ struct DeletionBookkeepingTests {
         #expect(store.totalAlloc[Int(node)] == 0)
     }
 }
+
+@Suite("Finder trash fallback")
+struct FinderTrashTests {
+
+    @Test("Output lines map back to input paths, empties meaning failure")
+    func parseAlignsWithInput() {
+        let output = "/Users/x/.Trash/A.app/\n\n/Users/x/.Trash/b.plist\n"
+        let landed = FinderTrash.parse(output, count: 3)
+        #expect(landed == ["/Users/x/.Trash/A.app", nil, "/Users/x/.Trash/b.plist"])
+    }
+
+    @Test("A line count that does not match the batch fails every item")
+    func parseRejectsMismatch() {
+        #expect(FinderTrash.parse("/only/one\n", count: 2) == [nil, nil])
+        #expect(FinderTrash.parse("", count: 1) == [nil])
+    }
+}

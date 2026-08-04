@@ -19,6 +19,17 @@ public struct TrashedItem: Sendable, Identifiable {
 public struct DeletionFailure: Sendable, Identifiable {
     public let path: String
     public let reason: String
+    /// The filesystem said no — as opposed to the deny list, a vanished file,
+    /// or an occupied restore target. The caller can turn this into permission
+    /// guidance where a bare reason string could not be told apart.
+    public let isPermissionDenied: Bool
+
+    public init(path: String, reason: String, isPermissionDenied: Bool = false) {
+        self.path = path
+        self.reason = reason
+        self.isPermissionDenied = isPermissionDenied
+    }
+
     public var id: String { path }
 }
 
@@ -59,6 +70,9 @@ public enum SafeDeleter {
     public static func moveToTrash(_ requests: [Request]) -> DeletionReport {
         var report = DeletionReport()
         let manager = FileManager()
+        /// Denied by the filesystem, kept aside for one Finder attempt at the
+        /// end — batched so the administrator dialog shows once, not per item.
+        var denied: [Request] = []
 
         for request in requests {
             // Re-checked here rather than trusted from the caller: this is the
@@ -86,13 +100,51 @@ public enum SafeDeleter {
                     bytes: request.bytes
                 ))
             } catch {
+                let permission = isPermissionError(error)
+                if permission { denied.append(request) }
                 report.failures.append(DeletionFailure(
                     path: request.path,
-                    reason: error.localizedDescription
+                    reason: error.localizedDescription,
+                    isPermissionDenied: permission
+                ))
+            }
+        }
+
+        // What we cannot rename, the Finder often can: it authenticates as an
+        // administrator for items owned by another account, and macOS lets it
+        // touch application bundles. Failures it resolves become successes.
+        if !denied.isEmpty {
+            let landed = FinderTrash.delete(denied.map(\.path))
+            for (request, trashPath) in zip(denied, landed) {
+                guard let trashPath else { continue }
+                report.failures.removeAll { $0.path == request.path }
+                report.trashed.append(TrashedItem(
+                    node: request.node,
+                    originalPath: request.path,
+                    trashPath: trashPath,
+                    bytes: request.bytes
                 ))
             }
         }
         return report
+    }
+
+    /// Whether the filesystem refused out of permissions, wherever the POSIX
+    /// error ended up — Foundation sometimes wraps it, sometimes not.
+    private static func isPermissionError(_ error: Error) -> Bool {
+        var current: NSError? = error as NSError
+        while let inspected = current {
+            if inspected.domain == NSCocoaErrorDomain,
+               inspected.code == CocoaError.fileWriteNoPermission.rawValue {
+                return true
+            }
+            if inspected.domain == NSPOSIXErrorDomain,
+               inspected.code == Int(EPERM) || inspected.code == Int(EACCES) {
+                return true
+            }
+            current = inspected.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
 
     /// Puts trashed items back where they came from.

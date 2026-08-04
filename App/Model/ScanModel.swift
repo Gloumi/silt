@@ -218,6 +218,10 @@ final class ScanModel {
     /// measure the disk outside the tree know to look again.
     private(set) var deletionEpoch = 0
     private(set) var deletionMessage: String?
+    /// A deletion failed because macOS refused to let us touch another app's
+    /// bundle — the fix is the « Gestion des apps » toggle in Settings, not a
+    /// retry, so the banner grows a button when this is set.
+    private(set) var needsAppManagement = false
     /// Sizes captured before deletion; undo needs them to restore the roll-up.
     private var undoSizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
 
@@ -706,7 +710,7 @@ final class ScanModel {
         }
         undoSizes = sizes
         lastDeletion = report.trashed.isEmpty ? nil : report
-        deletionMessage = summary(of: report)
+        present(report)
         selection = []
         junkSelection = []
         deletionEpoch += 1
@@ -732,6 +736,7 @@ final class ScanModel {
         }
         lastDeletion = nil
         undoSizes = [:]
+        needsAppManagement = false
         deletionMessage = failures.isEmpty
             ? "Restauration effectuée."
             : "\(failures.count) élément(s) n'ont pas pu être restaurés."
@@ -740,13 +745,17 @@ final class ScanModel {
         refreshJunkIfShown()
     }
 
-    func dismissDeletionMessage() { deletionMessage = nil }
+    func dismissDeletionMessage() {
+        deletionMessage = nil
+        needsAppManagement = false
+    }
 
     /// Empties the trash through the Finder: it owns the per-volume trash
     /// folders and their "put back" records, and TCC would deny us direct
     /// access to `~/.Trash` anyway.
     func emptyTrash() async {
         deletionMessage = "Vidage de la corbeille…"
+        needsAppManagement = false
         let success = await Task.detached {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -863,7 +872,7 @@ final class ScanModel {
         }
         undoSizes = sizes
         lastDeletion = report.trashed.isEmpty ? nil : report
-        deletionMessage = summary(of: report)
+        present(report)
         selection = []
         deletionEpoch += 1
         refreshRows()
@@ -1003,7 +1012,18 @@ final class ScanModel {
         requestDeletion()
     }
 
-    private func summary(of report: DeletionReport) -> String {
+    /// Turns a report into the banner: the counts, the first failure's actual
+    /// reason — a bare "1 échec" left the user with nothing to act on — and,
+    /// when macOS refused to touch an app bundle, the Settings toggle that
+    /// unlocks it.
+    private func present(_ report: DeletionReport) {
+        // Only when the bundle is ours: a permission failure on someone else's
+        // app is an ownership problem, and no Settings toggle changes that.
+        needsAppManagement = report.failures.contains {
+            $0.isPermissionDenied && $0.path.hasSuffix(".app")
+                && foreignOwner(of: $0.path) == nil
+        }
+
         var parts: [String] = []
         if !report.trashed.isEmpty {
             let bytes = report.reclaimedBytes.formatted(.byteCount(style: .file))
@@ -1014,9 +1034,36 @@ final class ScanModel {
         if !report.refused.isEmpty {
             parts.append("\(report.refused.count) protégé(s).")
         }
-        if !report.failures.isEmpty {
-            parts.append("\(report.failures.count) échec(s).")
+        if let failure = report.failures.first {
+            let name = (failure.path as NSString).lastPathComponent
+            let others = report.failures.count - 1
+            parts.append(
+                others == 0
+                    ? "Échec : \(name) — \(failure.reason)"
+                    : "\(report.failures.count) échecs, dont \(name) — \(failure.reason)"
+            )
+            if failure.isPermissionDenied,
+               let owner = foreignOwner(of: failure.path) {
+                parts.append(
+                    "Cet élément appartient au compte « \(owner) » : le Finder demande un mot de passe administrateur pour le supprimer."
+                )
+            }
         }
-        return parts.joined(separator: " ")
+        if needsAppManagement {
+            parts.append(
+                "macOS protège les applications : autorisez Silt dans « Gestion des apps », puis relancez-le."
+            )
+        }
+        deletionMessage = parts.joined(separator: " ")
+    }
+
+    /// The account owning this path, or nil when it is the current user's —
+    /// or unreadable, which permission-wise amounts to the same advice.
+    private func foreignOwner(of path: String) -> String? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        guard let owner = attributes?[.ownerAccountName] as? String,
+              owner != NSUserName()
+        else { return nil }
+        return owner
     }
 }

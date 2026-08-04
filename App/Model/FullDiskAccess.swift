@@ -43,3 +43,17 @@ enum FullDiskAccess {
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 }
+
+/// « Gestion des apps » — the permission that, since macOS 13, gates deleting
+/// or modifying *another* application's bundle. Full Disk Access does not
+/// stand in for it, and there is no way to probe it short of actually trying
+/// a deletion, so unlike Full Disk Access there is no `isGranted` here: the
+/// deletion report's permission failures are the detection.
+enum AppManagement {
+    static func openSettings() {
+        let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
+        )!
+        NSWorkspace.shared.open(url)
+    }
+}
