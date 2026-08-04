@@ -25,6 +25,31 @@ enum AppearanceSetting: String, CaseIterable, Identifiable {
     }
 }
 
+/// The global "default view" choice: a fixed presentation, or whatever
+/// browsing view was on screen last.
+enum DefaultViewSetting: RawRepresentable, Hashable {
+    case fixed(ScanModel.Presentation)
+    case lastUsed
+
+    init?(rawValue: String) {
+        if rawValue == "lastUsed" {
+            self = .lastUsed
+        } else if let presentation = ScanModel.Presentation(rawValue: rawValue),
+                  ScanModel.Presentation.browsing.contains(presentation) {
+            self = .fixed(presentation)
+        } else {
+            return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .fixed(let presentation): presentation.rawValue
+        case .lastUsed: "lastUsed"
+        }
+    }
+}
+
 /// Persisted preferences. Kept deliberately short — every option here is one the
 /// engine genuinely behaves differently for, not a knob for its own sake.
 @MainActor
@@ -39,6 +64,9 @@ final class Preferences {
         static let seenWelcome = "hasSeenWelcome"
         static let appearance = "appearance"
         static let customLocations = "customLocations"
+        static let defaultPresentation = "defaultPresentation"
+        static let lastPresentation = "lastUsedPresentation"
+        static let folderPresentations = "folderPresentations"
     }
 
     /// Folders the user pinned to the sidebar, in the order they added them.
@@ -58,6 +86,59 @@ final class Preferences {
 
     func removeLocation(_ path: String) {
         customLocations.removeAll { $0 == path }
+        setPresentation(nil, for: path)
+    }
+
+    /// What a selection falls back to when the folder has no view of its own:
+    /// a fixed view, or the one that was on screen last.
+    var defaultView: DefaultViewSetting {
+        didSet {
+            UserDefaults.standard.set(defaultView.rawValue,
+                                      forKey: Key.defaultPresentation)
+        }
+    }
+
+    /// The last browsing view that held the window, persisted so "Dernière
+    /// utilisée" survives a relaunch. ScanModel keeps it current.
+    var lastUsedPresentation: ScanModel.Presentation {
+        didSet {
+            UserDefaults.standard.set(lastUsedPresentation.rawValue,
+                                      forKey: Key.lastPresentation)
+        }
+    }
+
+    /// The view a selection should land in when the folder has no override.
+    var resolvedDefaultView: ScanModel.Presentation {
+        switch defaultView {
+        case .fixed(let presentation): presentation
+        case .lastUsed: lastUsedPresentation
+        }
+    }
+
+    /// Per-folder view overrides, keyed by path. Raw strings in storage; the
+    /// typed accessors below are the only doors in and out.
+    private var folderPresentations: [String: String] {
+        didSet {
+            UserDefaults.standard.set(folderPresentations,
+                                      forKey: Key.folderPresentations)
+        }
+    }
+
+    /// The view this folder asked for, or nil to follow the global default.
+    func presentation(for path: String) -> ScanModel.Presentation? {
+        folderPresentations[path]
+            .flatMap(ScanModel.Presentation.init(rawValue:))
+            .flatMap { ScanModel.Presentation.browsing.contains($0) ? $0 : nil }
+    }
+
+    /// Nil clears the override. Tool presentations are refused: cleanup and
+    /// reboot are destinations, not ways of looking at a folder.
+    func setPresentation(_ presentation: ScanModel.Presentation?, for path: String) {
+        if let presentation, ScanModel.Presentation.browsing.contains(presentation) {
+            folderPresentations[path] = presentation.rawValue
+        } else {
+            folderPresentations.removeValue(forKey: path)
+        }
     }
 
     /// Applied to `NSApp` rather than through `preferredColorScheme`, which
@@ -97,6 +178,14 @@ final class Preferences {
         appearance = defaults.string(forKey: Key.appearance)
             .flatMap(AppearanceSetting.init(rawValue:)) ?? .system
         customLocations = defaults.stringArray(forKey: Key.customLocations) ?? []
+        defaultView = defaults.string(forKey: Key.defaultPresentation)
+            .flatMap(DefaultViewSetting.init(rawValue:)) ?? .fixed(.sunburst)
+        lastUsedPresentation = defaults.string(forKey: Key.lastPresentation)
+            .flatMap(ScanModel.Presentation.init(rawValue:))
+            .flatMap { ScanModel.Presentation.browsing.contains($0) ? $0 : nil }
+            ?? .sunburst
+        folderPresentations = defaults.dictionary(forKey: Key.folderPresentations)
+            as? [String: String] ?? [:]
     }
 
     /// Scan options matching the current preferences.
@@ -120,6 +209,17 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 Text("Les couleurs de la vue Anneaux ont deux jeux distincts, vérifiés séparément en clair et en sombre — ce n'est pas la même palette éclaircie.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Vue par défaut", selection: $preferences.defaultView) {
+                    ForEach(ScanModel.Presentation.browsing) {
+                        Text($0.label).tag(DefaultViewSetting.fixed($0))
+                    }
+                    Divider()
+                    Text("Dernière utilisée").tag(DefaultViewSetting.lastUsed)
+                }
+                Text("Vue appliquée à chaque sélection dans la barre latérale ; « Dernière utilisée » conserve la vue en cours d'un dossier à l'autre. Un clic droit sur un élément permet de lui attribuer sa propre vue par défaut.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

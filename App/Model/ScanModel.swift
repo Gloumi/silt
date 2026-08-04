@@ -80,12 +80,27 @@ final class ScanModel {
             if Presentation.treeViews.contains(presentation) {
                 lastBrowsingPresentation = presentation
             }
+            // Remembered across folders and launches for "Dernière utilisée".
+            if Presentation.browsing.contains(presentation),
+               Preferences.shared.lastUsedPresentation != presentation {
+                Preferences.shared.lastUsedPresentation = presentation
+            }
         }
     }
     /// Where "show me where this lives" should land. Cleanup, Reboot and the
     /// large-files extract are lists of findings, not places in the tree, so
     /// none of them can ever be that destination.
     private var lastBrowsingPresentation: Presentation = .sunburst
+
+    init() {
+        let initial = Preferences.shared.resolvedDefaultView
+        presentation = initial
+        // didSet does not fire during init, so the mirror is set by hand.
+        // A large-files default still needs a tree view to land in.
+        if Presentation.treeViews.contains(initial) {
+            lastBrowsingPresentation = initial
+        }
+    }
 
     /// Increments once per scan. Node indices only mean anything within a
     /// single store, so anything caching geometry by node must drop it when
@@ -381,11 +396,12 @@ final class ScanModel {
     func select(path: String, name: String? = nil) {
         selectedRoot = path
         selectedRootName = name ?? QuickLocation.displayName(of: path)
-        // Pointing at a place is asking to browse it: leave whichever tool
-        // holds the window and give the sidebar highlight back to the location.
-        if !Presentation.browsing.contains(presentation) {
-            presentation = lastBrowsingPresentation
-        }
+        // Every selection lands in the folder's own view, or the global
+        // default without one. With a fixed global default a view picked by
+        // hand lasts only until the next selection; in "Dernière utilisée"
+        // mode the resolved default *is* the view in use, so it carries over.
+        presentation = Preferences.shared.presentation(for: path)
+            ?? Preferences.shared.resolvedDefaultView
         guard path != rootPath,
               let index = cache.firstIndex(where: { $0.path == path })
         else { return }

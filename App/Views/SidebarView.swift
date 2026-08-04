@@ -31,8 +31,8 @@ struct SidebarView: View {
                     row(path: path, name: QuickLocation.displayName(of: path)) {
                         Label(QuickLocation.displayName(of: path), systemImage: "folder")
                             .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .contextMenu {
+                    } menuItems: {
+                        Divider()
                         Button("Retirer de la liste") {
                             preferences.removeLocation(path)
                             // Leaving the selection on a row that no longer
@@ -145,8 +145,14 @@ struct SidebarView: View {
 
     /// A row that stands for a place. While a tool holds the window, no place
     /// is what is on screen, so none of them gets the highlight.
-    private func row<Content: View>(
-        path: String, name: String, @ViewBuilder content: () -> Content
+    ///
+    /// The context menu is attached here rather than at the call sites: every
+    /// place carries the default-view submenu, and stacking a second
+    /// `.contextMenu` outside would replace this one rather than merge.
+    private func row<Content: View, MenuItems: View>(
+        path: String, name: String,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder menuItems: () -> MenuItems
     ) -> some View {
         row(
             isSelected: model.selectedRoot == path
@@ -156,6 +162,43 @@ struct SidebarView: View {
             action: { model.select(path: path, name: name) },
             content: content
         )
+        .contextMenu {
+            defaultViewMenu(for: path)
+            menuItems()
+        }
+    }
+
+    /// Rows with nothing beyond the shared menu.
+    private func row<Content: View>(
+        path: String, name: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        row(path: path, name: name, content: content, menuItems: { EmptyView() })
+    }
+
+    /// The "default view" submenu every place row carries. Toggles rather than
+    /// a Picker: menus render them as checkmark items, and a Picker cannot hold
+    /// the divider that separates the four views from "follow the global
+    /// setting".
+    @ViewBuilder
+    private func defaultViewMenu(for path: String) -> some View {
+        Menu("Vue par défaut") {
+            ForEach(ScanModel.Presentation.browsing) { mode in
+                Toggle(mode.label, isOn: Binding(
+                    get: { preferences.presentation(for: path) == mode },
+                    set: { _ in
+                        preferences.setPresentation(mode, for: path)
+                        // Seeing the change at once beats waiting for the next
+                        // selection — but only when this row is on screen.
+                        if model.selectedRoot == path { model.presentation = mode }
+                    }
+                ))
+            }
+            Divider()
+            Toggle("Globale", isOn: Binding(
+                get: { preferences.presentation(for: path) == nil },
+                set: { _ in preferences.setPresentation(nil, for: path) }
+            ))
+        }
     }
 
     private func addFolder() {
