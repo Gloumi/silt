@@ -47,6 +47,7 @@ private struct PendingChild {
     var alloc: Int64
     var logical: Int64
     var files: Int32
+    var modified: Int32
     var flags: NodeFlags
     var inode: InodeKey
     var isHardlinkCandidate: Bool
@@ -123,6 +124,7 @@ public enum ScanEngine {
                 alloc: Int64(rootStat.st_blocks) * 512,
                 logical: Int64(rootStat.st_size),
                 files: 0,
+                modified: Int32(clamping: rootStat.st_mtimespec.tv_sec),
                 flags: .directory
             )
             inner.queue.append(
@@ -268,6 +270,7 @@ public enum ScanEngine {
                 var alloc = entry.allocSize
                 var logical = entry.logicalSize
                 var files: Int32 = 1
+                var modified = Int32(clamping: entry.modTime)
                 var descendPath: String?
 
                 if entry.isSymlink {
@@ -307,6 +310,10 @@ public enum ScanEngine {
                         alloc += sum.alloc
                         logical += sum.logical
                         files = sum.files
+                        // Nothing inside a collapsed directory gets a node, so
+                        // `rollUp` has nothing to raise its date with. Without
+                        // this a busy node_modules would read as abandoned.
+                        modified = max(modified, sum.newestMod)
                     } else {
                         descendPath = childPath
                     }
@@ -325,6 +332,7 @@ public enum ScanEngine {
                     alloc: alloc,
                     logical: logical,
                     files: files,
+                    modified: modified,
                     flags: flags,
                     inode: InodeKey(dev: entry.devID, ino: entry.fileID),
                     isHardlinkCandidate: entry.linkCount > 1 && !entry.isDirectory,
@@ -379,6 +387,7 @@ public enum ScanEngine {
                     alloc: alloc,
                     logical: logical,
                     files: child.files,
+                    modified: child.modified,
                     flags: flags
                 )
 
@@ -413,6 +422,9 @@ public enum ScanEngine {
         var alloc: Int64 = 0
         var logical: Int64 = 0
         var files: Int32 = 0
+        /// Newest mtime seen anywhere below, the equivalent of what `rollUp`
+        /// does for the parts of the tree that do get nodes.
+        var newestMod: Int32 = 0
     }
 
     /// Sums a subtree without creating any nodes for it.
@@ -444,6 +456,10 @@ public enum ScanEngine {
 
             try? reader.enumerate(fd: fd) { entry in
                 guard entry.nameBytes.count > 0 else { return }
+
+                // Before the hard-link guard below: a duplicate link pays no
+                // bytes, but the file it points at is still activity in here.
+                result.newestMod = max(result.newestMod, Int32(clamping: entry.modTime))
 
                 if entry.isDirectory {
                     result.alloc += entry.allocSize

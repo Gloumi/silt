@@ -44,8 +44,30 @@ struct SiltApp: App {
                     get: { model.useLogicalSize },
                     set: { model.useLogicalSize = $0 }
                 ))
+                // Here rather than in the breadcrumb bar: a second selector up
+                // there would appear and vanish with the current view, and make
+                // the bar jump every time you switched.
+                //
+                // Two toggles rather than a Picker: a menu Picker draws the
+                // ticks by itself, but there is no supported way to hang a
+                // keyboard shortcut off its items — and without shortcuts a
+                // mode buried in a menu is a mode nobody flips twice.
+                Toggle(ColorMode.category.label, isOn: colorMode(.category))
+                    .keyboardShortcut("1", modifiers: [.command, .option])
+                Toggle(ColorMode.age.label, isOn: colorMode(.age))
+                    .keyboardShortcut("2", modifiers: [.command, .option])
             }
         }
+    }
+
+    /// Radio behaviour out of a toggle: ticking one sets the mode, and unticking
+    /// the mode already on does nothing rather than leaving the views with no
+    /// colour scheme at all.
+    private func colorMode(_ mode: ColorMode) -> Binding<Bool> {
+        Binding(
+            get: { model.colorMode == mode },
+            set: { if $0 { model.colorMode = mode } }
+        )
     }
 
     private func chooseFolder() {

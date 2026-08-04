@@ -117,6 +117,7 @@ private struct Details: View {
                         Text("\(Format.count(Int(store.fileCount[Int(node)]))) fichiers")
                     }
                 }
+                modified
                 LabeledContent("Emplacement") {
                     Text((path as NSString).deletingLastPathComponent)
                         .lineLimit(3)
@@ -138,6 +139,22 @@ private struct Details: View {
                 actions
             }
             .padding(14)
+        }
+    }
+
+    /// The date, under a label that says what it actually measures.
+    ///
+    /// For a folder this is the newest date anywhere below it, not the folder's
+    /// own mtime — so calling it "Modifié" would be a quiet lie. "Dernière
+    /// activité" is what a rolled-up maximum really answers.
+    @ViewBuilder
+    private var modified: some View {
+        let seconds = store.modTime[Int(node)]
+        if let age = Format.age(unixSeconds: seconds) {
+            LabeledContent(store.isDirectory(node) ? "Dernière activité" : "Modifié") {
+                Text(age)
+                    .help(Format.exactDate(unixSeconds: seconds) ?? "")
+            }
         }
     }
 

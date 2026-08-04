@@ -88,6 +88,43 @@ struct LargestFilesTests {
         #expect(!store.flags[Int(top[0])].contains(.hardlinkDuplicate))
     }
 
+    @Test("An age cutoff drops recent files and keeps the size ordering")
+    func ageCutoffFiltersButKeepsOrder() async throws {
+        let fixture = try Fixture()
+        try fixture.file("huge-recent.bin", bytes: 200_000)
+        try fixture.file("big-stale.bin", bytes: 90_000)
+        try fixture.file("small-stale.bin", bytes: 50_000)
+        try fixture.setModified("huge-recent.bin", daysAgo: 3)
+        try fixture.setModified("big-stale.bin", daysAgo: 500)
+        try fixture.setModified("small-stale.bin", daysAgo: 900)
+
+        let store = (await ScanEngine.scan(root: fixture.path)).store
+        let cutoff = Int32(Date().timeIntervalSince1970 - 365 * 86_400)
+        let stale = LargestFiles.top(in: store, under: 0, modifiedBefore: cutoff)
+
+        // The biggest file is gone because it is recent, and what is left is
+        // still ranked by size — not by age.
+        #expect(stale.map { store.name(of: $0) } == ["big-stale.bin", "small-stale.bin"])
+    }
+
+    @Test("An old file under a busy folder is still found")
+    func ageCutoffDoesNotPruneTheWalk() async throws {
+        let fixture = try Fixture()
+        // The folder's aggregated date is recent, but the file we want is not.
+        // Pruning the descent on the folder would lose it entirely.
+        try fixture.file("busy/forgotten.bin", bytes: 80_000)
+        try fixture.file("busy/touched-today.bin", bytes: 1_000)
+        try fixture.setModified("busy/forgotten.bin", daysAgo: 900)
+
+        let store = (await ScanEngine.scan(root: fixture.path)).store
+        let busy = try #require(store.child(of: 0, named: "busy"))
+        let cutoff = Int32(Date().timeIntervalSince1970 - 365 * 86_400)
+        #expect(store.modTime[Int(busy)] > cutoff) // premise: the folder is busy
+
+        let stale = LargestFiles.top(in: store, under: 0, modifiedBefore: cutoff)
+        #expect(stale.map { store.name(of: $0) } == ["forgotten.bin"])
+    }
+
     @Test("Logical and on-disk orderings can differ, and both are honoured")
     func logicalSizeOrdering() async throws {
         let fixture = try Fixture()

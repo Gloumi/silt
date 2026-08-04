@@ -73,6 +73,34 @@ struct OKLab {
     }
 }
 
+/// What the treemap and the sunburst encode in their colours.
+///
+/// Two genuinely different questions — "which branch is this" and "how long has
+/// this been sitting here" — and no way to answer both at once in one hue. So it
+/// is a mode, not a blend.
+enum ColorMode: String, CaseIterable, Identifiable {
+    case category, age
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .category: "Couleur par dossier"
+        case .age: "Couleur par ancienneté"
+        }
+    }
+
+    /// Each symbol is the literal noun of its label — a folder, a calendar.
+    /// Anything cleverer (a palette, a clock) has to be learned, and a clock at
+    /// this size is one rounded rectangle away from a disk icon.
+    var symbol: String {
+        switch self {
+        case .category: "folder"
+        case .age: "calendar"
+        }
+    }
+}
+
 /// Colour assignment for the sunburst and the treemap.
 ///
 /// Two rules, both load-bearing:
@@ -185,6 +213,97 @@ enum Palette {
             )
             .withChroma(scale: max(0.8, 1 - step * chromaLossPerRing))
             .color
+    }
+
+    // MARK: - Age ramp
+
+    /// Sequential ramp for the age mode: one warm hue, five steps of lightness.
+    ///
+    /// A single hue on purpose. Age is an *ordinal* variable, and the moment
+    /// lightness alone carries the order the scale survives every kind of colour
+    /// blindness without a pairwise check — which is the opposite problem from
+    /// the categorical palette above, where the whole difficulty is that eight
+    /// hues have to stay apart.
+    ///
+    /// The dark ramp does not simply mirror the light one: pushing "old" as far
+    /// down there as it goes here would sink the oldest blocks into the
+    /// background, so the range is compressed upward and the darkest step stays
+    /// clearly above the surface it sits on.
+    private static let lightAgeHexes: [UInt32] = [
+        0xFBE0A6, 0xF3C171, 0xE09E44, 0xC0782A, 0x9A5A1C,
+    ]
+    private static let darkAgeHexes: [UInt32] = [
+        0xF7D08A, 0xE6AC55, 0xCE8A32, 0xA96C25, 0x82511E,
+    ]
+
+    /// Colour for a slice of a given age. Nil means no date — an aggregated
+    /// "others" tile, or a filesystem that gave us nothing — and is painted
+    /// neutral rather than guessed at.
+    ///
+    /// Depth plays no part here, unlike the categorical mode: in this mode the
+    /// lightness *is* the reading, and shading it by ring would make two blocks
+    /// of the same age look different.
+    static func age(_ band: AgeBand?, dark: Bool, boost: Double = 0) -> Color {
+        guard let band else { return Color(white: (dark ? 0.40 : 0.62) + boost) }
+        let hexes = dark ? darkAgeHexes : lightAgeHexes
+        let base = OKLab(hex: hexes[band.rawValue])
+        return base.withLightness(min(0.93, base.L + boost)).color
+    }
+
+    /// Hover highlight for the age mode.
+    ///
+    /// Half the nudge the categorical mode uses, because here lightness carries
+    /// the meaning: a full highlight would move a block a whole band up the
+    /// legend. The views draw an outline as well, which is what actually says
+    /// "this one" — the lift only keeps the feedback immediate.
+    static func ageHighlighted(_ band: AgeBand?, dark: Bool) -> Color {
+        age(band, dark: dark, boost: 0.05)
+    }
+
+    /// Inner edge of the sunburst's radial gradient, age mode.
+    static func ageDeepened(_ band: AgeBand?, dark: Bool) -> Color {
+        guard let band else { return Color(white: (dark ? 0.40 : 0.62) - 0.05) }
+        let hexes = dark ? darkAgeHexes : lightAgeHexes
+        let base = OKLab(hex: hexes[band.rawValue])
+        return base.withLightness(max(0.2, base.L - 0.085)).color
+    }
+
+    /// Hairline around a block in the age mode.
+    ///
+    /// The categorical palette separates neighbours by *being* different
+    /// colours, helped by the sibling nudge. This ramp cannot: two folders in
+    /// the same band are the same paint down to the pixel, and the gap between
+    /// them only shows their parent — the same paint again — so a row of blocks
+    /// welds into one slab. The edge is drawn in the block's own hue, a step
+    /// darker, which restores the boundary without adding a second colour the
+    /// eye has to interpret.
+    static func ageEdge(_ band: AgeBand?, dark: Bool) -> Color {
+        guard let band else { return Color(white: (dark ? 0.40 : 0.62) - 0.13) }
+        let hexes = dark ? darkAgeHexes : lightAgeHexes
+        let base = OKLab(hex: hexes[band.rawValue])
+        return base.withLightness(max(0.18, base.L - 0.15))
+            .withChroma(scale: 1.05)
+            .color
+    }
+
+    /// Label ink for a block in the age mode, plus the halo behind it.
+    ///
+    /// The categorical palette keeps its lightness roughly level across the
+    /// eight hues, so one ink per theme carries every slice. This ramp is built
+    /// on the opposite principle — lightness *is* the variable, running from
+    /// near-white down to a deep rust — so the text has to follow the block it
+    /// sits on rather than the window it sits in. White on the first bands is
+    /// what made the recent folders unreadable.
+    static func ageInk(_ band: AgeBand?, dark: Bool) -> (text: Color, halo: Color) {
+        let onLightBackground: Bool
+        if let band {
+            let hexes = dark ? darkAgeHexes : lightAgeHexes
+            onLightBackground = OKLab(hex: hexes[band.rawValue]).L > 0.62
+        } else {
+            // The neutral grey, which is light in light mode and dark in dark.
+            onLightBackground = !dark
+        }
+        return onLightBackground ? (.black, .white) : (.white, .black)
     }
 
     /// Slightly deeper variant of a slice's colour, for the inner edge of a

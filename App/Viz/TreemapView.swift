@@ -62,6 +62,11 @@ struct TreemapView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .overlay(alignment: .bottom) {
+                if model.colorMode == .age {
+                    AgeLegend().padding(.bottom, 10)
+                }
+            }
             .onChange(of: geometry.size, initial: true) { _, size in
                 lastSize = size
                 rebuild(in: size)
@@ -94,6 +99,10 @@ struct TreemapView: View {
     // MARK: - Drawing
 
     private func draw(context: GraphicsContext) {
+        // One "now" for the whole pass: reading the clock per tile would let the
+        // cutoff drift across a single frame.
+        let now = Date()
+        let ageMode = model.colorMode == .age
         for tile in tiles {
             // A 2px gap between fills, so neighbours read as separate blocks
             // without any need for outlines.
@@ -102,17 +111,23 @@ struct TreemapView: View {
 
             let isHovered = hovered?.id == tile.id
             let isSelected = tile.node.map { model.selection.contains($0) } ?? false
+            let band = ageMode ? ageBand(of: tile, now: now) : nil
 
-            let color = (isHovered || isSelected)
-                ? Palette.highlighted(
-                    slot: tile.slot, ring: tile.depth,
-                    sibling: tile.siblingIndex, dark: isDark)
-                : Palette.color(
-                    slot: tile.slot, ring: tile.depth,
-                    sibling: tile.siblingIndex, dark: isDark)
+            let color = fill(
+                for: tile, band: band, emphasised: isHovered || isSelected
+            )
 
             let path = Path(roundedRect: rect, cornerRadius: 3)
             context.fill(path, with: .color(color))
+
+            // The gap alone stops working once neighbours share a colour, which
+            // is the normal case in the age mode.
+            if ageMode {
+                context.stroke(
+                    path, with: .color(Palette.ageEdge(band, dark: isDark)),
+                    lineWidth: 1
+                )
+            }
 
             if isSelected {
                 context.stroke(
@@ -120,20 +135,56 @@ struct TreemapView: View {
                 )
             }
         }
-        drawLabels(context: context)
+        drawLabels(context: context, now: now)
     }
 
-    private func drawLabels(context: GraphicsContext) {
+    /// The two colour modes, side by side. Geometry is identical either way —
+    /// only the paint changes, which is why switching needs no rebuild.
+    private func fill(
+        for tile: TreemapTile, band: AgeBand?, emphasised: Bool
+    ) -> Color {
+        switch model.colorMode {
+        case .category:
+            return emphasised
+                ? Palette.highlighted(
+                    slot: tile.slot, ring: tile.depth,
+                    sibling: tile.siblingIndex, dark: isDark)
+                : Palette.color(
+                    slot: tile.slot, ring: tile.depth,
+                    sibling: tile.siblingIndex, dark: isDark)
+        case .age:
+            return emphasised
+                ? Palette.ageHighlighted(band, dark: isDark)
+                : Palette.age(band, dark: isDark)
+        }
+    }
+
+    /// Nil for an aggregated tile: it stands for items of every age at once, so
+    /// there is no honest colour for it.
+    private func ageBand(of tile: TreemapTile, now: Date) -> AgeBand? {
+        guard let node = tile.node, let store = model.store else { return nil }
+        return AgeBand.band(modTime: store.modTime[Int(node)], now: now)
+    }
+
+    private func drawLabels(context: GraphicsContext, now: Date) {
         guard let store = model.store else { return }
+        let ageMode = model.colorMode == .age
         for tile in tiles {
             guard let node = tile.node,
                   tile.rect.width > 40,
                   tile.rect.height > TreemapLayout.headerHeight
             else { continue }
 
+            // In the age mode the block under the label can be anything from
+            // near-white to deep rust, so the ink follows the block; the
+            // categorical palette holds one lightness and needs only the theme.
+            let ink = ageMode
+                ? Palette.ageInk(ageBand(of: tile, now: now), dark: isDark).text
+                : (isDark ? Color.white : Color.black)
+
             let text = Text(store.name(of: node))
                 .font(.system(size: 10, weight: tile.depth == 1 ? .semibold : .regular))
-                .foregroundStyle(isDark ? .white : .black)
+                .foregroundStyle(ink)
             let resolved = context.resolve(text)
             // Measured unconstrained on purpose: measuring inside the tile's own
             // width returns a value clamped to that width, so the "does it fit"
@@ -180,11 +231,15 @@ struct TreemapView: View {
         guard let node = tile.node else {
             return ["\(tile.mergedCount) autres éléments", Format.bytes(tile.size)]
         }
-        return [
-            store.name(of: node),
-            "\(Format.bytes(tile.size)) · "
-                + "\(Format.count(Int(store.fileCount[Int(node)]))) fichiers",
-        ]
+        var detail = "\(Format.bytes(tile.size)) · "
+            + "\(Format.count(Int(store.fileCount[Int(node)]))) fichiers"
+        // Only in the age mode: it is what the colour is claiming, so the
+        // tooltip is where that claim gets checked.
+        if model.colorMode == .age,
+           let age = Format.age(unixSeconds: store.modTime[Int(node)]) {
+            detail += " · \(age)"
+        }
+        return [store.name(of: node), detail]
     }
 }
 

@@ -54,6 +54,20 @@ public struct NodeStore: Sendable {
     /// Number of files in the subtree (directories excluded). Rolled up too.
     public private(set) var fileCount: [Int32] = []
 
+    /// Modification time in Unix seconds. Before `rollUp()` this is the node's
+    /// own mtime; after, it is the newest mtime anywhere in its subtree.
+    ///
+    /// A directory's own mtime only says when an entry was last added or renamed
+    /// inside it, which makes a cache that is read and rewritten constantly look
+    /// abandoned. Rolling the newest date up answers the question the user is
+    /// actually asking: *has anything in here moved lately?*
+    ///
+    /// `Int32` rather than `Int64` to keep the row at four bytes; dates are
+    /// clamped on the way in, so a file stamped past 2038 reads as very recent.
+    /// That is the safe direction — it can only keep something out of a cleanup
+    /// suggestion, never put it in.
+    public private(set) var modTime: [Int32] = []
+
     public private(set) var flags: [NodeFlags] = []
 
     public var count: Int { parent.count }
@@ -71,6 +85,7 @@ public struct NodeStore: Sendable {
         totalAlloc.reserveCapacity(n)
         totalLogical.reserveCapacity(n)
         fileCount.reserveCapacity(n)
+        modTime.reserveCapacity(n)
         flags.reserveCapacity(n)
     }
 
@@ -88,6 +103,7 @@ public struct NodeStore: Sendable {
         alloc: Int64,
         logical: Int64,
         files: Int32,
+        modified: Int32,
         flags nodeFlags: NodeFlags
     ) -> Int32 {
         let index = Int32(parent.count)
@@ -100,6 +116,7 @@ public struct NodeStore: Sendable {
         totalAlloc.append(alloc)
         totalLogical.append(logical)
         fileCount.append(files)
+        modTime.append(modified)
         flags.append(nodeFlags)
         return index
     }
@@ -116,29 +133,51 @@ public struct NodeStore: Sendable {
 
     // MARK: - Roll-up
 
-    /// Accumulates every subtree's sizes and file counts into its ancestors.
+    /// Accumulates every subtree's sizes, file counts and dates into its
+    /// ancestors.
     ///
     /// Relies on invariant 1 (child index > parent index): walking the arrays
     /// backwards means a node is always fully accumulated before its own
     /// contribution is pushed to its parent. One linear pass, no recursion, no
     /// risk of blowing the stack on a deep tree.
+    ///
+    /// Sizes are summed, dates are maxed. Both are idempotent enough for the
+    /// partial snapshots, which roll up a fresh copy of the tree every time.
     public mutating func rollUp() {
         guard count > 1 else { return }
         totalAlloc.withUnsafeMutableBufferPointer { alloc in
             totalLogical.withUnsafeMutableBufferPointer { logical in
                 fileCount.withUnsafeMutableBufferPointer { files in
-                    parent.withUnsafeBufferPointer { parents in
-                        var i = alloc.count - 1
-                        while i > 0 {
-                            let p = Int(parents[i])
-                            alloc[p] += alloc[i]
-                            logical[p] += logical[i]
-                            files[p] += files[i]
-                            i -= 1
+                    modTime.withUnsafeMutableBufferPointer { mod in
+                        parent.withUnsafeBufferPointer { parents in
+                            Self.accumulate(
+                                alloc: alloc, logical: logical, files: files,
+                                mod: mod, parents: parents
+                            )
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// The reverse pass itself, lifted out of the pointer pyramid above so the
+    /// loop stays readable.
+    private static func accumulate(
+        alloc: UnsafeMutableBufferPointer<Int64>,
+        logical: UnsafeMutableBufferPointer<Int64>,
+        files: UnsafeMutableBufferPointer<Int32>,
+        mod: UnsafeMutableBufferPointer<Int32>,
+        parents: UnsafeBufferPointer<Int32>
+    ) {
+        var i = alloc.count - 1
+        while i > 0 {
+            let p = Int(parents[i])
+            alloc[p] += alloc[i]
+            logical[p] += logical[i]
+            files[p] += files[i]
+            if mod[i] > mod[p] { mod[p] = mod[i] }
+            i -= 1
         }
     }
 
@@ -197,6 +236,14 @@ public struct NodeStore: Sendable {
         flags[Int(node)].contains(.directory)
     }
 
+    /// Last modification, or the newest one in the subtree for a directory.
+    /// Nil when the filesystem gave us no date at all.
+    public func modificationDate(of node: Int32) -> Date? {
+        let seconds = modTime[Int(node)]
+        guard seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(seconds))
+    }
+
     /// Rebuilds an absolute path by walking up to the root, whose name is the
     /// full root path. Cheap enough for on-demand use (inspector, deletion);
     /// not meant to be called per node during a scan.
@@ -236,6 +283,11 @@ public struct NodeStore: Sendable {
     /// parent and child arrays, and through geometry the views are animating,
     /// so removing an entry would invalidate all of it. Marking is O(depth) and
     /// lets the tree stay live under the user instead of forcing a rescan.
+    ///
+    /// `modTime` is deliberately left alone. A date is not a total, so there is
+    /// nothing to credit back: an ancestor simply keeps the date of a child that
+    /// went to the Trash, until the next scan. Fixing that would mean rescanning
+    /// the whole subtree for a new maximum on every single deletion.
     public mutating func markDeleted(_ node: Int32) {
         let index = Int(node)
         guard node > 0, !flags[index].contains(.deleted) else { return }

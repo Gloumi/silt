@@ -67,6 +67,8 @@ final class Preferences {
         static let defaultPresentation = "defaultPresentation"
         static let lastPresentation = "lastUsedPresentation"
         static let folderPresentations = "folderPresentations"
+        static let colorMode = "colorMode"
+        static let largeFilesAge = "largeFilesAgeFilter"
     }
 
     /// Folders the user pinned to the sidebar, in the order they added them.
@@ -155,6 +157,22 @@ final class Preferences {
         NSApp?.appearance = appearance.appearance
     }
 
+    /// What the treemap and the sunburst paint with: the branch a slice belongs
+    /// to, or how long ago it was last touched.
+    var colorMode: ColorMode {
+        didSet { UserDefaults.standard.set(colorMode.rawValue, forKey: Key.colorMode) }
+    }
+
+    /// The age filter of the large-files view. Persisted like the other view
+    /// state: coming back to a list that forgot the filter you set is a small
+    /// betrayal every single time.
+    var largeFilesAgeFilter: AgeFilter {
+        didSet {
+            UserDefaults.standard.set(largeFilesAgeFilter.rawValue,
+                                      forKey: Key.largeFilesAge)
+        }
+    }
+
     var useLogicalSize: Bool {
         didSet { UserDefaults.standard.set(useLogicalSize, forKey: Key.logicalSize) }
     }
@@ -186,6 +204,10 @@ final class Preferences {
             ?? .sunburst
         folderPresentations = defaults.dictionary(forKey: Key.folderPresentations)
             as? [String: String] ?? [:]
+        colorMode = defaults.string(forKey: Key.colorMode)
+            .flatMap(ColorMode.init(rawValue:)) ?? .category
+        largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
+            .flatMap(AgeFilter.init(rawValue:)) ?? .all
     }
 
     /// Scan options matching the current preferences.
@@ -220,6 +242,13 @@ struct SettingsView: View {
                     Text("Dernière utilisée").tag(DefaultViewSetting.lastUsed)
                 }
                 Text("Vue appliquée à chaque sélection dans la barre latérale ; « Dernière utilisée » conserve la vue en cours d'un dossier à l'autre. Un clic droit sur un élément permet de lui attribuer sa propre vue par défaut.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Couleurs", selection: $preferences.colorMode) {
+                    ForEach(ColorMode.allCases) { Text($0.label).tag($0) }
+                }
+                Text("Dans les vues Anneaux et Blocs : une teinte par dossier de premier niveau, ou une échelle allant du récent à l'oublié. Se change aussi depuis le menu Présentation.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

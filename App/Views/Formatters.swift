@@ -23,6 +23,23 @@ enum Format {
         guard seconds >= 60 else { return "à l'instant" }
         return date.formatted(.relative(presentation: .named))
     }
+
+    /// A stored modification time, relative. Nil when there is no date to show.
+    ///
+    /// Relative rather than absolute everywhere it appears: the question being
+    /// asked of these dates is always "is this still in use", and "il y a 3 ans"
+    /// answers it without the mental arithmetic "12 mars 2023" demands. The
+    /// exact date is offered as a tooltip where the room exists for it.
+    static func age(unixSeconds: Int32) -> String? {
+        guard unixSeconds > 0 else { return nil }
+        return age(since: Date(timeIntervalSince1970: TimeInterval(unixSeconds)))
+    }
+
+    static func exactDate(unixSeconds: Int32) -> String? {
+        guard unixSeconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(unixSeconds))
+            .formatted(date: .long, time: .shortened)
+    }
 }
 
 extension ShapeStyle where Self == Color {

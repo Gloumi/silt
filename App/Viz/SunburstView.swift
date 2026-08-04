@@ -87,6 +87,11 @@ struct SunburstView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .overlay(alignment: .bottom) {
+                if model.colorMode == .age {
+                    AgeLegend().padding(.bottom, 10)
+                }
+            }
             // The merge threshold is a length in points, so the layout depends
             // on how big the chart is drawn. Rebuilt on a step change only —
             // dragging a window edge must not rebuild on every pixel.
@@ -211,6 +216,9 @@ struct SunburstView: View {
         var shapes: [(arc: Arc, path: Path, opacity: Double)] = []
         shapes.reserveCapacity(arcs.count)
         var silhouette = Path()
+        // One "now" for the whole pass, so no slice is dated against a slightly
+        // later clock than its neighbour.
+        let now = Date()
 
         for arc in arcs {
             let (shape, opacity) = interpolated(arc)
@@ -255,18 +263,32 @@ struct SunburstView: View {
             let isHovered = hovered?.id == arc.id
             let isSelected = arc.node.map { model.selection.contains($0) } ?? false
 
-            let outerColor = (isHovered || isSelected)
-                ? Palette.highlighted(
-                    slot: arc.slot, ring: arc.ring,
-                    sibling: arc.siblingIndex, dark: isDark)
-                : Palette.color(
-                    slot: arc.slot, ring: arc.ring,
-                    sibling: arc.siblingIndex, dark: isDark)
-            let innerColor = (isHovered || isSelected)
-                ? outerColor
-                : Palette.deepened(
-                    slot: arc.slot, ring: arc.ring,
-                    sibling: arc.siblingIndex, dark: isDark)
+            let emphasised = isHovered || isSelected
+            let outerColor: Color
+            let innerColor: Color
+            switch model.colorMode {
+            case .category:
+                outerColor = emphasised
+                    ? Palette.highlighted(
+                        slot: arc.slot, ring: arc.ring,
+                        sibling: arc.siblingIndex, dark: isDark)
+                    : Palette.color(
+                        slot: arc.slot, ring: arc.ring,
+                        sibling: arc.siblingIndex, dark: isDark)
+                innerColor = emphasised
+                    ? outerColor
+                    : Palette.deepened(
+                        slot: arc.slot, ring: arc.ring,
+                        sibling: arc.siblingIndex, dark: isDark)
+            case .age:
+                let band = ageBand(of: arc, now: now)
+                outerColor = emphasised
+                    ? Palette.ageHighlighted(band, dark: isDark)
+                    : Palette.age(band, dark: isDark)
+                innerColor = emphasised
+                    ? outerColor
+                    : Palette.ageDeepened(band, dark: isDark)
+            }
 
             // One radial gradient shared by every slice, anchored at the centre
             // of the chart: the rings gain depth without any slice inventing a
@@ -309,7 +331,7 @@ struct SunburstView: View {
             context.stroke(path, with: .color(isDark ? .white : .black), lineWidth: 1.5)
         }
 
-        drawLabels(context: context, metrics: metrics, shapes: shapes)
+        drawLabels(context: context, metrics: metrics, shapes: shapes, now: now)
     }
 
     /// Angular gap between neighbouring slices, in radians.
@@ -416,11 +438,13 @@ struct SunburstView: View {
     /// crammed into a sliver is worse than none.
     private func drawLabels(
         context: GraphicsContext, metrics: Metrics,
-        shapes: [(arc: Arc, path: Path, opacity: Double)]
+        shapes: [(arc: Arc, path: Path, opacity: Double)],
+        now: Date
     ) {
         guard transition >= 1, let store = model.store else { return }
         let ringWidth = metrics.ringWidth
         guard ringWidth >= 14 else { return }
+        let ageMode = model.colorMode == .age
 
         for (arc, path, _) in shapes where arc.sweep > 0.18 {
             let radius = metrics.radius(ring: arc.ring, fraction: 0.5)
@@ -439,8 +463,16 @@ struct SunburstView: View {
             } else {
                 name = "Autres (\(arc.mergedCount))"
             }
+            // Same reason as the treemap: in the age mode the slice under the
+            // label runs from near-white to deep rust, so the ink follows the
+            // slice instead of the theme.
+            let ink = ageMode
+                ? Palette.ageInk(ageBand(of: arc, now: now), dark: isDark)
+                : (text: isDark ? Color.white : Color.black,
+                   halo: isDark ? Color.black : Color.white)
+
             guard let resolved = fittedLabel(
-                name, width: available, context: context
+                name, width: available, ink: ink.text, context: context
             ) else { continue }
 
             let point = CGPoint(
@@ -453,10 +485,7 @@ struct SunburstView: View {
             // is, so it is also made impossible.
             var layer = context
             layer.clip(to: path)
-            layer.addFilter(.shadow(
-                color: (isDark ? Color.black : Color.white).opacity(0.55),
-                radius: 1.5
-            ))
+            layer.addFilter(.shadow(color: ink.halo.opacity(0.55), radius: 1.5))
             layer.draw(resolved, at: point)
         }
     }
@@ -468,7 +497,7 @@ struct SunburstView: View {
     /// we are testing against returns a value clamped to that width, so the
     /// comparison could never fail. The treemap hit the same trap.
     private func fittedLabel(
-        _ name: String, width: Double, context: GraphicsContext
+        _ name: String, width: Double, ink: Color, context: GraphicsContext
     ) -> GraphicsContext.ResolvedText? {
         let unbounded = CGSize(
             width: CGFloat.greatestFiniteMagnitude,
@@ -478,7 +507,7 @@ struct SunburstView: View {
             context.resolve(
                 Text(string)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(isDark ? .white : .black)
+                    .foregroundStyle(ink)
             )
         }
 
@@ -571,6 +600,13 @@ struct SunburstView: View {
         model.activate(node)
     }
 
+    /// Nil for an aggregated slice: it stands for items of every age at once,
+    /// so there is no honest colour for it.
+    private func ageBand(of arc: Arc, now: Date) -> AgeBand? {
+        guard let node = arc.node, let store = model.store else { return nil }
+        return AgeBand.band(modTime: store.modTime[Int(node)], now: now)
+    }
+
     private func tooltipText(for arc: Arc) -> [String]? {
         guard let store = model.store else { return nil }
         guard let node = arc.node else {
@@ -580,10 +616,14 @@ struct SunburstView: View {
             ]
         }
         let files = store.fileCount[Int(node)]
-        return [
-            store.name(of: node),
-            "\(Format.bytes(arc.size)) · \(Format.count(Int(files))) fichiers",
-        ]
+        var detail = "\(Format.bytes(arc.size)) · \(Format.count(Int(files))) fichiers"
+        // Only in the age mode: it is what the colour is claiming, so the
+        // tooltip is where that claim gets checked.
+        if model.colorMode == .age,
+           let age = Format.age(unixSeconds: store.modTime[Int(node)]) {
+            detail += " · \(age)"
+        }
+        return [store.name(of: node), detail]
     }
 
     // MARK: - Geometry

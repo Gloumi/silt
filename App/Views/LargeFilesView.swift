@@ -35,11 +35,24 @@ struct LargeFilesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let files = model.largeFiles {
             if files.isEmpty {
-                ContentUnavailableView(
-                    "Aucun fichier",
-                    systemImage: "doc",
-                    description: Text("Ce dossier ne contient aucun fichier visible.")
-                )
+                // The filter has its own wording: "aucun fichier" under a
+                // two-year cutoff would read as an empty folder, when the
+                // folder is in fact full of things that are simply still in use.
+                ContentUnavailableView {
+                    Label(
+                        model.largeFilesAgeFilter == .all
+                            ? "Aucun fichier" : "Rien d'aussi ancien",
+                        systemImage: "doc"
+                    )
+                } description: {
+                    Text(model.largeFilesAgeFilter.emptyStateDescription)
+                } actions: {
+                    if model.largeFilesAgeFilter != .all {
+                        Button("Voir toutes les dates") {
+                            model.largeFilesAgeFilter = .all
+                        }
+                    }
+                }
             } else {
                 loaded(files)
             }
@@ -110,9 +123,7 @@ struct LargeFilesView: View {
                 Text(Format.bytes(total))
                     .font(.system(size: 22, weight: .semibold))
                     .monospacedDigit()
-                Text("dans les \(Format.count(files.count)) plus gros fichiers")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption(files.count)
             }
 
             Spacer()
@@ -135,6 +146,43 @@ struct LargeFilesView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    /// The subtitle, with its last words turned into the age filter.
+    ///
+    /// The control *replaces* the caption instead of joining the bar: that bar
+    /// already carries a total, a selection size and two buttons, and a picker
+    /// wedged in there would be the sixth thing competing for the same glance.
+    /// Styled as the running text it grew out of, so the line still reads as a
+    /// sentence — "dans les 100 plus gros fichiers, plus d'un an".
+    private func caption(_ count: Int) -> some View {
+        HStack(spacing: 3) {
+            Text("dans les \(Format.count(count)) plus gros fichiers ·")
+            Menu {
+                Picker("Ancienneté", selection: Binding(
+                    get: { model.largeFilesAgeFilter },
+                    set: { model.largeFilesAgeFilter = $0 }
+                )) {
+                    ForEach(AgeFilter.allCases) { filter in
+                        Text(filter.label).tag(filter)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                HStack(spacing: 2) {
+                    Text(model.largeFilesAgeFilter.label)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 7, weight: .semibold))
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("N'afficher que les fichiers qui n'ont pas bougé depuis…")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     /// One click ticks the row; ⇧-clic ticks the whole stretch since the last
@@ -233,9 +281,21 @@ private struct LargeFileRow: View {
 
             Spacer(minLength: 12)
 
-            Text(Format.bytes(size))
-                .monospacedDigit()
-                .frame(width: 78, alignment: .trailing)
+            // A column of its own rather than another clause appended to the
+            // secondary line, which already carries the friendly name, the
+            // badge and the containing folder. A column gets scanned; one more
+            // "·" in a sentence has to be read.
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(Format.bytes(size))
+                    .monospacedDigit()
+                if let age = Format.age(unixSeconds: store.modTime[Int(node)]) {
+                    Text(age)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: 92, alignment: .trailing)
         }
         .padding(.vertical, 2)
         .contentShape(.rect)

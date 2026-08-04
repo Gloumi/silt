@@ -30,6 +30,11 @@ final class ScanModel {
         /// tree like the others, but it is a flat extract of a whole subtree —
         /// "show me where this lives" needs an actual tree view to land in.
         static let treeViews: [Presentation] = [.sunburst, .treemap, .list]
+
+        /// The two drawn views. They share a palette, so the colour mode means
+        /// something in these and nowhere else.
+        static let charts: [Presentation] = [.sunburst, .treemap]
+
         var label: String {
             switch self {
             case .sunburst: "Anneaux"
@@ -176,6 +181,7 @@ final class ScanModel {
         var treeVersion: Int
         var node: Int32
         var useLogical: Bool
+        var age: AgeFilter
         var scanning: Bool
     }
 
@@ -183,8 +189,15 @@ final class ScanModel {
         LargeFilesKey(
             scanID: scanID, treeVersion: treeVersion,
             node: currentNode, useLogical: useLogicalSize,
-            scanning: isScanning
+            age: largeFilesAgeFilter, scanning: isScanning
         )
+    }
+
+    /// How stale a file has to be to make the list at all. Stored in
+    /// `Preferences`, like the colour mode and for the same reason.
+    var largeFilesAgeFilter: AgeFilter {
+        get { Preferences.shared.largeFilesAgeFilter }
+        set { Preferences.shared.largeFilesAgeFilter = newValue }
     }
 
     /// Set while the uninstall sheet is up, and while it is being built.
@@ -232,6 +245,18 @@ final class ScanModel {
             Preferences.shared.useLogicalSize = useLogicalSize
             refreshRows()
         }
+    }
+
+    /// What the treemap and the sunburst paint with. Purely a drawing choice —
+    /// no geometry depends on it, so nothing needs rebuilding when it changes.
+    ///
+    /// Reads straight through to `Preferences` rather than keeping a copy: this
+    /// one is settable from two places at once — the Présentation menu and the
+    /// Settings window — and a cached copy would let them drift apart. Both are
+    /// `@Observable`, so a view reading it here still tracks changes made there.
+    var colorMode: ColorMode {
+        get { Preferences.shared.colorMode }
+        set { Preferences.shared.colorMode = newValue }
     }
 
     private var scanTask: Task<Void, Never>?
@@ -966,10 +991,17 @@ final class ScanModel {
         let node = currentNode
         let useLogical = useLogicalSize
         let id = scanID
+        // Captured once here rather than read per node: "now" drifting mid-walk
+        // would make the cutoff mean something slightly different at each end
+        // of the tree.
+        let cutoff = largeFilesAgeFilter.cutoff()
         largeFilesTask = Task { [weak self] in
             let top = await Task.detached {
                 Signposts.measure("largestFiles") {
-                    LargestFiles.top(in: store, under: node, useLogical: useLogical)
+                    LargestFiles.top(
+                        in: store, under: node,
+                        useLogical: useLogical, modifiedBefore: cutoff
+                    )
                 }
             }.value
             // Indices only mean anything within the store they came from: a

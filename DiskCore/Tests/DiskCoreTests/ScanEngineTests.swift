@@ -49,6 +49,16 @@ struct Fixture: ~Copyable {
         )
     }
 
+    /// Backdates an entry. Call it on the files *before* their folders: writing
+    /// a file bumps its directory's own mtime right back to now.
+    func setModified(_ relative: String, daysAgo: Double) throws {
+        let url = relative.isEmpty ? root : root.appendingPathComponent(relative)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-daysAgo * 86_400)],
+            ofItemAtPath: url.path
+        )
+    }
+
     func symlink(_ destination: String, at relative: String) throws {
         try FileManager.default.createSymbolicLink(
             atPath: root.appendingPathComponent(relative).path,

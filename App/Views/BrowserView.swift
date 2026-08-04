@@ -239,19 +239,15 @@ private struct BreadcrumbBar: View {
 
             // Re-tapping a volume in the sidebar now reuses the tree in memory,
             // so refreshing has to be something the user asks for explicitly.
-            Button {
+            BarButton(
+                symbol: "arrow.clockwise",
+                help: "Actualiser l'analyse",
+                isEnabled: model.canRescan
+            ) {
                 model.rescan()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(.rect)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(model.canRescan ? Color.accentColor : Color.secondary)
-            .disabled(!model.canRescan)
-            .help("Actualiser l'analyse")
 
+            ColorModeSwitcher(model: model)
             ViewModeSwitcher(model: model)
                 .padding(.trailing, 12)
         }
