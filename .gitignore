@@ -9,3 +9,6 @@ xcuserdata/
 *.xcodeproj
 App/Info.plist
 build/
+
+# Réglages locaux Claude Code (permissions accumulées par session).
+.claude/
