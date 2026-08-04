@@ -23,7 +23,8 @@ public enum SystemPaths {
         guard length > 0 else { return nil }
         var buffer = [CChar](repeating: 0, count: length)
         guard confstr(name, &buffer, length) == length else { return nil }
-        return canonical(String(cString: buffer))
+        let utf8 = buffer.prefix(while: { $0 != 0 }).map(UInt8.init(bitPattern:))
+        return canonical(String(decoding: utf8, as: UTF8.self))
     }
 
     /// Strips the trailing slash confstr appends and rewrites `/var` to
