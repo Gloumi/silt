@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Silt app icon — "ver dans le sédiment" (concept A spirale × style 3 sédiment).
+       Source de vérité : rasterisée vers AppIcon.appiconset via Scripts (voir git log). -->
+  <defs>
+    <linearGradient id="sq" x1="0" y1="52" x2="0" y2="460" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2b2e35"/>
+      <stop offset="1" stop-color="#17191d"/>
+    </linearGradient>
+    <linearGradient id="coral" x1="0" y1="120" x2="0" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffa274"/>
+      <stop offset="1" stop-color="#ef6f46"/>
+    </linearGradient>
+    <radialGradient id="glowR" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff8a5c" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ff8a5c" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="sqclip"><rect x="52" y="52" width="408" height="408" rx="92"/></clipPath>
+  </defs>
+
+  <rect x="52" y="52" width="408" height="408" rx="92" fill="url(#sq)"/>
+  <g clip-path="url(#sqclip)">
+    <path d="M52 366 Q140 346 252 362 Q364 380 460 352 L460 460 L52 460 Z" fill="#8a6425" opacity="0.5"/>
+    <path d="M52 396 Q150 380 262 392 Q374 404 460 386 L460 460 L52 460 Z" fill="#2f6b4d" opacity="0.6"/>
+    <path d="M52 424 Q160 412 272 420 Q384 430 460 414 L460 460 L52 460 Z" fill="#2c4a72" opacity="0.75"/>
+    <circle cx="120" cy="382" r="3" fill="#f5b944" opacity="0.8"/>
+    <circle cx="330" cy="384" r="2.5" fill="#52c583" opacity="0.8"/>
+    <circle cx="400" cy="436" r="3" fill="#5b9df5" opacity="0.8"/>
+    <circle cx="160" cy="438" r="2.5" fill="#5b9df5" opacity="0.7"/>
+  </g>
+  <rect x="53.5" y="53.5" width="405" height="405" rx="90.5" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="3"/>
+  <circle cx="250" cy="248" r="172" fill="url(#glowR)"/>
+  <g transform="translate(-61.9 -64.7) scale(1.13)">
+    <path d="M286 276 A30 30 0 0 0 226 276 A50 50 0 0 0 326 276 A70 70 0 0 0 186 276 A90 90 0 1 0 353.9 231"
+          fill="none" stroke="url(#coral)" stroke-width="32" stroke-linecap="round"/>
+    <path d="M286 276 A30 30 0 0 0 226 276 A50 50 0 0 0 326 276 A70 70 0 0 0 186 276 A90 90 0 1 0 353.9 231"
+          fill="none" stroke="#000000" stroke-opacity="0.14" stroke-width="32" stroke-dasharray="5 32" stroke-dashoffset="14"/>
+    <circle cx="340" cy="207" r="32" fill="url(#coral)"/>
+    <ellipse cx="317" cy="212" rx="6.5" ry="4" fill="#f0566e" opacity="0.5"/>
+    <ellipse cx="363" cy="212" rx="6.5" ry="4" fill="#f0566e" opacity="0.5"/>
+    <circle cx="327" cy="199" r="7" fill="#2b2622"/>
+    <circle cx="353" cy="199" r="7" fill="#2b2622"/>
+    <circle cx="324.5" cy="196.5" r="2.4" fill="#fff"/>
+    <circle cx="350.5" cy="196.5" r="2.4" fill="#fff"/>
+    <path d="M330 219 Q340 227 350 219" fill="none" stroke="#2b2622" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>
