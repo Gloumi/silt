@@ -94,6 +94,28 @@ struct ContentView: View {
     @State private var spaceMonitor: Any?
 
     var body: some View {
+        // The banner is stacked under the whole split view rather than laid over
+        // it. A `safeAreaInset` on the NavigationSplitView never reaches the
+        // columns — the banner floated over the status bar and over the smallest
+        // treemap tiles — and insetting the detail column alone stopped it short
+        // of the sidebar. Below the stack it keeps the full window width *and*
+        // takes real height, so everything above simply lays out in what is left.
+        VStack(spacing: 0) {
+            splitView
+            if let message = model.deletionMessage {
+                DeletionBanner(
+                    message: message,
+                    canUndo: model.lastDeletion != nil,
+                    needsAppManagement: model.needsAppManagement,
+                    onEmptyTrash: { Task { await model.emptyTrash() } },
+                    onUndo: { Task { await model.undoLastDeletion() } },
+                    onDismiss: { model.dismissDeletionMessage() }
+                )
+            }
+        }
+    }
+
+    private var splitView: some View {
         NavigationSplitView {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
@@ -127,18 +149,6 @@ struct ContentView: View {
                 model: model, plan: plan,
                 onDismiss: { model.uninstallPlan = nil }
             )
-        }
-        .safeAreaInset(edge: .bottom) {
-            if let message = model.deletionMessage {
-                DeletionBanner(
-                    message: message,
-                    canUndo: model.lastDeletion != nil,
-                    needsAppManagement: model.needsAppManagement,
-                    onEmptyTrash: { Task { await model.emptyTrash() } },
-                    onUndo: { Task { await model.undoLastDeletion() } },
-                    onDismiss: { model.dismissDeletionMessage() }
-                )
-            }
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -260,11 +270,27 @@ private struct DeletionBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        // The buttons come and go with the message — an offer to undo, then a
+        // bare "Restauration effectuée." — and a bandeau that shrank with them
+        // would shove the whole window's content up and down. The tallest state
+        // sets the height for every state.
+        .frame(minHeight: 42)
         .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
         .transition(.move(edge: .bottom).combined(with: .opacity))
         .animation(.spring(response: 0.35), value: message)
+        .task(id: message) {
+            guard isTransient else { return }
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            onDismiss()
+        }
     }
+
+    /// A message with nothing to act on has already said everything it had to
+    /// say; making the user click it away would be a chore. One that still holds
+    /// the way back stays until they take it or dismiss it themselves.
+    private var isTransient: Bool { !canUndo && !needsAppManagement }
 }
 
 
