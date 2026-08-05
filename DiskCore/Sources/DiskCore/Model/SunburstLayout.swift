@@ -48,18 +48,22 @@ public enum SunburstLayout {
         maxRings: Int = 4,
         slotCount: Int = 8,
         useLogicalSize: Bool,
+        filter: SearchMask? = nil,
         minimumSweep: Double = 0.006 // ≈ 0.34°
     ) -> [Arc] {
         build(
             store: store, root: root, children: nil,
             maxRings: maxRings, slotCount: slotCount,
-            useLogicalSize: useLogicalSize, minimumSweep: minimumSweep
+            useLogicalSize: useLogicalSize, filter: filter,
+            minimumSweep: minimumSweep
         )
     }
 
     /// - Parameter children: draw only these, as if they were all the root had.
     ///   This is how an "others" slice becomes somewhere you can go: the same
     ///   chart, restricted to what the slice stood for.
+    /// - Parameter filter: when set, draw only the branches a search keeps, at
+    ///   the size of what they retain rather than what they hold.
     public static func build(
         store: NodeStore,
         root: Int32,
@@ -67,14 +71,17 @@ public enum SunburstLayout {
         maxRings: Int = 4,
         slotCount: Int = 8,
         useLogicalSize: Bool,
+        filter: SearchMask? = nil,
         minimumSweep: Double = 0.006
     ) -> [Arc] {
         var arcs: [Arc] = []
         arcs.reserveCapacity(1024)
 
         let total = children.map { list in
-            list.reduce(Int64(0)) { $0 + size(store, $1, useLogicalSize) }
-        } ?? size(store, root, useLogicalSize)
+            list.reduce(Int64(0)) {
+                $0 + store.size(of: $1, useLogical: useLogicalSize, through: filter)
+            }
+        } ?? store.size(of: root, useLogical: useLogicalSize, through: filter)
         guard total > 0 else { return [] }
 
         descend(
@@ -86,16 +93,11 @@ public enum SunburstLayout {
             maxRings: maxRings,
             slotCount: slotCount,
             useLogicalSize: useLogicalSize,
+            filter: filter,
             minimumSweep: minimumSweep,
             into: &arcs
         )
         return arcs
-    }
-
-    private static func size(
-        _ store: NodeStore, _ node: Int32, _ useLogical: Bool
-    ) -> Int64 {
-        useLogical ? store.totalLogical[Int(node)] : store.totalAlloc[Int(node)]
     }
 
     private static func descend(
@@ -110,12 +112,13 @@ public enum SunburstLayout {
         maxRings: Int,
         slotCount: Int,
         useLogicalSize: Bool,
+        filter: SearchMask?,
         minimumSweep: Double,
         into arcs: inout [Arc]
     ) {
         guard ring <= maxRings, parentSize > 0 else { return }
         let children = explicit ?? store.childrenSortedBySize(
-            of: parent, useLogical: useLogicalSize
+            of: parent, useLogical: useLogicalSize, through: filter
         )
         guard !children.isEmpty else { return }
 
@@ -124,7 +127,9 @@ public enum SunburstLayout {
         var merged: [Int32] = []
 
         for (index, child) in children.enumerated() {
-            let childSize = size(store, child, useLogicalSize)
+            let childSize = store.size(
+                of: child, useLogical: useLogicalSize, through: filter
+            )
             guard childSize > 0 else { continue }
 
             let sweep = availableSweep * Double(childSize) / Double(parentSize)
@@ -158,7 +163,7 @@ public enum SunburstLayout {
                     startAngle: angle, availableSweep: sweep,
                     parentSize: childSize, slot: childSlot,
                     maxRings: maxRings, slotCount: slotCount,
-                    useLogicalSize: useLogicalSize,
+                    useLogicalSize: useLogicalSize, filter: filter,
                     minimumSweep: minimumSweep, into: &arcs
                 )
             }

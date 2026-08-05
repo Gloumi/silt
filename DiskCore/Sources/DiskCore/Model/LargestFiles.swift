@@ -23,12 +23,16 @@ public enum LargestFiles {
     ///   this instant are left out. The ranking stays by size — this answers
     ///   "what is big *and* stale", not "what is oldest", which on a Mac would
     ///   return a list of tiny system files.
+    /// - Parameter filter: when set, only entries a search keeps are listed.
+    ///   The walk gets *faster* under a filter, not slower: whole branches with
+    ///   nothing matching under them are never descended into.
     public static func top(
         in store: NodeStore,
         under root: Int32,
         limit: Int = 100,
         useLogical: Bool = false,
-        modifiedBefore: Int32? = nil
+        modifiedBefore: Int32? = nil,
+        filter: SearchMask? = nil
     ) -> [Int32] {
         guard !store.isEmpty, root >= 0, Int(root) < store.count, limit > 0 else {
             return []
@@ -60,6 +64,12 @@ public enum LargestFiles {
             // so a deleted directory must also stop the walk — descending would
             // resurrect files that just went to the Trash.
             if flags.contains(.deleted) { continue }
+
+            // One test doing both jobs: a branch with nothing matching under it
+            // is not walked at all, and a leaf that does not match is not a
+            // candidate. Files under a folder that matched by name inherit its
+            // flag, so searching for a folder still lists what is inside it.
+            if let filter, !filter.keeps(node) { continue }
 
             let isDirectory = flags.contains(.directory)
 

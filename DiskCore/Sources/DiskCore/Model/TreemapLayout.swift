@@ -33,6 +33,8 @@ public enum TreemapLayout {
 
     /// - Parameter children: draw only these, as if they were all the root
     ///   had — the tiles matching a slice the user stepped into elsewhere.
+    /// - Parameter filter: when set, draw only the branches a search keeps, at
+    ///   the size of what they retain rather than what they hold.
     public static func build(
         store: NodeStore,
         root: Int32,
@@ -41,6 +43,7 @@ public enum TreemapLayout {
         maxDepth: Int = 3,
         slotCount: Int = 8,
         useLogicalSize: Bool,
+        filter: SearchMask? = nil,
         minimumArea: Double = 24
     ) -> [TreemapTile] {
         var tiles: [TreemapTile] = []
@@ -49,16 +52,11 @@ public enum TreemapLayout {
             store: store, parent: root, children: children,
             rect: bounds, depth: 1,
             slot: nil, maxDepth: maxDepth, slotCount: slotCount,
-            useLogicalSize: useLogicalSize, minimumArea: minimumArea,
+            useLogicalSize: useLogicalSize, filter: filter,
+            minimumArea: minimumArea,
             into: &tiles
         )
         return tiles
-    }
-
-    private static func size(
-        _ store: NodeStore, _ node: Int32, _ useLogical: Bool
-    ) -> Int64 {
-        useLogical ? store.totalLogical[Int(node)] : store.totalAlloc[Int(node)]
     }
 
     private static func descend(
@@ -71,19 +69,22 @@ public enum TreemapLayout {
         maxDepth: Int,
         slotCount: Int,
         useLogicalSize: Bool,
+        filter: SearchMask?,
         minimumArea: Double,
         into tiles: inout [TreemapTile]
     ) {
         guard depth <= maxDepth, rect.width > 1, rect.height > 1 else { return }
         let children = explicit ?? store.childrenSortedBySize(
-            of: parent, useLogical: useLogicalSize
+            of: parent, useLogical: useLogicalSize, through: filter
         )
         guard !children.isEmpty else { return }
 
         let available = Double(rect.width * rect.height)
         let parentSize = explicit.map { list in
-            Double(list.reduce(Int64(0)) { $0 + size(store, $1, useLogicalSize) })
-        } ?? Double(size(store, parent, useLogicalSize))
+            Double(list.reduce(Int64(0)) {
+                $0 + store.size(of: $1, useLogical: useLogicalSize, through: filter)
+            })
+        } ?? Double(store.size(of: parent, useLogical: useLogicalSize, through: filter))
         guard parentSize > 0 else { return }
 
         // Tiles too small to see or click are pooled rather than drawn as
@@ -93,7 +94,9 @@ public enum TreemapLayout {
         var merged: [Int32] = []
 
         for (index, child) in children.enumerated() {
-            let value = Double(size(store, child, useLogicalSize))
+            let value = Double(
+                store.size(of: child, useLogical: useLogicalSize, through: filter)
+            )
             guard value > 0 else { continue }
             let area = available * value / parentSize
             if area < minimumArea {
@@ -140,7 +143,7 @@ public enum TreemapLayout {
                         store: store, parent: child.node, rect: inner,
                         depth: depth + 1, slot: childSlot, maxDepth: maxDepth,
                         slotCount: slotCount, useLogicalSize: useLogicalSize,
-                        minimumArea: minimumArea, into: &tiles
+                        filter: filter, minimumArea: minimumArea, into: &tiles
                     )
                 }
             }
