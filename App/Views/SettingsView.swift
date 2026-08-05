@@ -69,6 +69,37 @@ final class Preferences {
         static let folderPresentations = "folderPresentations"
         static let colorMode = "colorMode"
         static let largeFilesAge = "largeFilesAgeFilter"
+        static let recentSearches = "recentSearches"
+    }
+
+    /// Queries the user has actually run, most recent first.
+    ///
+    /// Offered from the search field's magnifying glass, the way every macOS
+    /// search field has since forever. Capped hard: this is a shortcut back to
+    /// something you just looked for, not a history you are meant to browse.
+    private(set) var recentSearches: [String] = [] {
+        didSet {
+            UserDefaults.standard.set(recentSearches, forKey: Key.recentSearches)
+        }
+    }
+
+    static let recentSearchLimit = 8
+
+    func rememberSearch(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        // Case-insensitive de-dup so "DMG" does not sit under ".dmg" twice, and
+        // re-running an old query moves it back to the top rather than adding
+        // a second copy.
+        recentSearches.removeAll { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
+        recentSearches.insert(trimmed, at: 0)
+        if recentSearches.count > Self.recentSearchLimit {
+            recentSearches.removeLast(recentSearches.count - Self.recentSearchLimit)
+        }
+    }
+
+    func clearRecentSearches() {
+        recentSearches = []
     }
 
     /// Folders the user pinned to the sidebar, in the order they added them.
@@ -208,6 +239,7 @@ final class Preferences {
             .flatMap(ColorMode.init(rawValue:)) ?? .category
         largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
             .flatMap(AgeFilter.init(rawValue:)) ?? .all
+        recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
     }
 
     /// Scan options matching the current preferences.

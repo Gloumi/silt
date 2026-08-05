@@ -26,6 +26,14 @@ struct SiltApp: App {
                 Divider()
                 Link("Code source", destination: URL(string: "https://github.com/")!)
             }
+            // Where macOS puts Find. Declared by hand because `.searchable` —
+            // which would have installed it — is not what draws the field; see
+            // SearchField for why it cannot be.
+            CommandGroup(after: .textEditing) {
+                Button("Rechercher…") { model.requestSearchFocus() }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .disabled(!model.canSearch)
+            }
             CommandGroup(after: .toolbar) {
                 // ⌘R is already the inspector's "Afficher dans le Finder".
                 Button("Actualiser l'analyse") { model.rescan() }
@@ -36,6 +44,8 @@ struct SiltApp: App {
                     .disabled(model.trail.count <= 1)
                 Button("Aperçu rapide") { model.togglePreview() }
                     .keyboardShortcut(.space, modifiers: [])
+                // The key-down monitor below swallows ⌘⌫ while a text field is
+                // being edited, so reaching this action always means the tree.
                 Button("Mettre à la corbeille") { model.requestDeletion() }
                     .keyboardShortcut(.delete, modifiers: .command)
                     .disabled(model.selection.isEmpty)
@@ -178,6 +188,22 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .help("Taille réellement occupée, ou taille logique du contenu.")
             }
+            // Kept out of the browsing views' own bar on purpose: search
+            // belongs where macOS puts it, and a `ToolbarItem` — unlike
+            // `.searchable` in a NavigationSplitView — stays inside the
+            // detail's toolbar group rather than spanning across the
+            // inspector. It keeps its slot in the views it does not apply to,
+            // like the colour switcher: losing it would shuffle the group
+            // every time you stepped into Cleanup.
+            //
+            // It sits next to the size picker rather than out at the trailing
+            // edge, which is where it belongs. Nothing moves it there: neither
+            // `ToolbarSpacer(.flexible)` (macOS 26) at either placement, nor an
+            // item claiming the leftover width itself. Tracked in issue #1.
+            ToolbarItem(placement: .primaryAction) {
+                SearchField(model: model)
+                    .disabled(!model.canSearch)
+            }
         }
         // Dropping a folder on the window is the fastest way to start a scan.
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -197,7 +223,7 @@ struct ContentView: View {
             spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 // The monitor already runs on the main thread; the hop is only
                 // formal. A Bool crosses it where the non-Sendable event cannot.
-                let consumed = MainActor.assumeIsolated { handleSpace(event) == nil }
+                let consumed = MainActor.assumeIsolated { handleKey(event) == nil }
                 return consumed ? nil : event
             }
         }
@@ -208,6 +234,23 @@ struct ContentView: View {
     }
 
     /// Returns nil to consume the event, or the event to let it through.
+    private func handleKey(_ event: NSEvent) -> NSEvent? {
+        // ⌘⌫ while a caret is in any text field means "delete the line", never
+        // "trash the selection" — but the Trash menu item's key equivalent is
+        // consulted before the field editor ever sees the key. Same cure as
+        // space below: do the editing gesture here and swallow the event, so
+        // the menu never fires. The event names its own window, which spares
+        // us guessing at `keyWindow` from inside a menu action.
+        if event.keyCode == 51, // delete (backspace)
+           event.modifierFlags
+               .intersection([.command, .shift, .option, .control]) == .command,
+           let editor = event.window?.firstResponder as? NSTextView {
+            editor.deleteToBeginningOfLine(nil)
+            return nil
+        }
+        return handleSpace(event)
+    }
+
     private func handleSpace(_ event: NSEvent) -> NSEvent? {
         guard event.keyCode == 49, // space
               event.modifierFlags

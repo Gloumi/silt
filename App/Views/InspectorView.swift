@@ -109,8 +109,19 @@ private struct Details: View {
                 header
 
                 LabeledContent("Taille") {
-                    Text(Format.bytes(model.size(of: node)))
-                        .monospacedDigit()
+                    VStack(alignment: .trailing, spacing: 1) {
+                        // The item's real size, not the filtered one: the row
+                        // below counts every file in it, and the button at the
+                        // bottom will trash all of them.
+                        Text(Format.bytes(model.trueSize(of: node)))
+                            .monospacedDigit()
+                        if let mask = model.searchMask,
+                           mask.bytes(of: node) < model.trueSize(of: node) {
+                            Text("dont \(Format.bytes(mask.bytes(of: node))) trouvés")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 if store.isDirectory(node) {
                     LabeledContent("Contient") {
@@ -253,8 +264,9 @@ private struct MultipleSelection: View {
             Text("\(model.selection.count) éléments")
                 .font(.headline)
             LabeledContent("Taille totale") {
+                // Real sizes: this is what the button below is about to trash.
                 Text(Format.bytes(
-                    model.selection.reduce(0) { $0 + model.size(of: $1) }
+                    model.selection.reduce(0) { $0 + model.trueSize(of: $1) }
                 ))
                 .monospacedDigit()
             }

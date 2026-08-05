@@ -112,6 +112,9 @@ struct SunburstView: View {
         // not on the number of rows: a folder reaches its final child count
         // almost immediately while the sizes behind them keep growing.
         .onChange(of: model.treeVersion) { rebuild(animated: false) }
+        // Not animated: a filter is not a drill, and morphing the arcs into a
+        // narrower tree reads as if we had navigated somewhere.
+        .onChange(of: model.searchVersion) { rebuild(animated: false) }
     }
 
     // MARK: - Layout lifecycle
@@ -137,9 +140,10 @@ struct SunburstView: View {
             SunburstLayout.build(
                 store: store,
                 root: model.currentNode,
-                children: model.othersScope,
+                children: model.visibleOthersScope,
                 maxRings: Self.maxRings,
                 useLogicalSize: model.useLogicalSize,
+                filter: model.searchMask,
                 minimumSweep: minimumSweep(rings: rings)
             )
         }

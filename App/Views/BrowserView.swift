@@ -52,6 +52,10 @@ struct BrowserView: View {
             }
         }
         .frame(minWidth: 480, minHeight: 360)
+        // On the whole body rather than inside `loadedContent`: leaving for
+        // Cleanup has to drop the mask, and a task that only exists in the
+        // browsing views would never run to do it.
+        .task(id: model.searchKey) { model.ensureSearchMask() }
     }
 
     @ViewBuilder
@@ -80,6 +84,14 @@ struct BrowserView: View {
                 // nothing — reports its intrinsic height, the stack shrinks to
                 // fit and both bars drift into the middle of the window.
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Over the whole group, not inside the list: the charts draw a
+                // blank canvas when nothing survives the filter and have no
+                // empty state of their own to say why.
+                .overlay {
+                    if model.isFiltering, model.rows.isEmpty {
+                        ContentUnavailableView.search(text: model.searchText)
+                    }
+                }
                 StatusBar(model: model, store: store)
             }
         }
@@ -110,7 +122,9 @@ struct BrowserView: View {
                     }
                 }
             .listStyle(.inset)
-            if model.rows.isEmpty {
+            // A filter matching nothing is not an empty folder, and the
+            // group above already says so.
+            if model.rows.isEmpty, !model.isFiltering {
                 ContentUnavailableView("Dossier vide", systemImage: "folder")
             }
         }
@@ -300,9 +314,18 @@ private struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text("\(Format.count(model.rows.count)) éléments")
-            Text("·")
-            Text("\(Format.count(Int(store.fileCount[Int(model.currentNode)]))) fichiers au total")
+            if let mask = model.searchMask {
+                // The total on the right is already the retained part, which on
+                // its own reads as the folder having shrunk. Say what it is a
+                // part of.
+                Text("\(Format.count(mask.resultCount(under: model.currentNode))) résultats")
+                Text("·")
+                Text("sur \(Format.bytes(model.trueSize(of: model.currentNode))) dans ce dossier")
+            } else {
+                Text("\(Format.count(model.rows.count)) éléments")
+                Text("·")
+                Text("\(Format.count(Int(store.fileCount[Int(model.currentNode)]))) fichiers au total")
+            }
             if let scannedAt = model.scannedAt {
                 Text("·")
                 // Says how stale the numbers are, which matters now that a tree

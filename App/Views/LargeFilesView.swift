@@ -34,7 +34,17 @@ struct LargeFilesView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let files = model.largeFiles {
-            if files.isEmpty {
+            if files.isEmpty, model.isFiltering {
+                // A search matching nothing is neither an empty folder nor an
+                // age cutoff being strict, so it gets its own way out.
+                ContentUnavailableView {
+                    Label("Aucun fichier ne correspond", systemImage: "doc")
+                } description: {
+                    Text("Rien ne correspond à « \(model.searchText) » ici.")
+                } actions: {
+                    Button("Effacer la recherche") { model.searchText = "" }
+                }
+            } else if files.isEmpty {
                 // The filter has its own wording: "aucun fichier" under a
                 // two-year cutoff would read as an empty folder, when the
                 // folder is in fact full of things that are simply still in use.

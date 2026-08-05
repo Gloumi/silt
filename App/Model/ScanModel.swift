@@ -112,14 +112,23 @@ final class ScanModel {
     /// this changes.
     private(set) var scanID = 0
 
-    /// Bumped every time the tree's contents change — a scan snapshot, the
-    /// final result, a deletion, an undo.
+    /// Bumped every time what is on screen changes — a scan snapshot, the final
+    /// result, a deletion, an undo, and every step of navigation.
     ///
     /// The visualisations used to key off `rows.count`, which only moves when
     /// the *number* of children changes. A home folder settles on its twenty-odd
     /// entries within the first second while their sizes keep growing for ten
     /// more, so the rings froze almost immediately and only caught up at the end.
     private(set) var treeVersion = 0
+
+    /// Bumped only when the tree's *contents* change, never when we merely walk
+    /// around in it.
+    ///
+    /// `treeVersion` cannot serve here because it moves on every `enter` and
+    /// `goUp` too, and a search mask is a full pass over every name in the
+    /// store. Keying it on navigation would make opening a folder cost more
+    /// than the scan that found it.
+    private(set) var contentVersion = 0
 
     private(set) var phase: Phase = .idle
     /// Held separately from `phase` rather than inside it: deletion mutates the
@@ -183,13 +192,15 @@ final class ScanModel {
         var useLogical: Bool
         var age: AgeFilter
         var scanning: Bool
+        var searchVersion: Int
     }
 
     var largeFilesKey: LargeFilesKey {
         LargeFilesKey(
             scanID: scanID, treeVersion: treeVersion,
             node: currentNode, useLogical: useLogicalSize,
-            age: largeFilesAgeFilter, scanning: isScanning
+            age: largeFilesAgeFilter, scanning: isScanning,
+            searchVersion: searchVersion
         )
     }
 
@@ -198,6 +209,126 @@ final class ScanModel {
     var largeFilesAgeFilter: AgeFilter {
         get { Preferences.shared.largeFilesAgeFilter }
         set { Preferences.shared.largeFilesAgeFilter = newValue }
+    }
+
+    /// Where the search looks. Both scopes read the *same* mask — retained bytes
+    /// depend only on a node's own subtree — so this moves the view rather than
+    /// filtering anything differently.
+    enum SearchScope: String, CaseIterable, Identifiable {
+        /// From the scan root, recentring on wherever the results turn out to be.
+        case everywhere
+        /// The folder on screen and below, without moving.
+        case here
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .everywhere: "Tout"
+            case .here: "Ici"
+            }
+        }
+    }
+
+    enum SearchPhase {
+        case idle, running, ready
+    }
+
+    /// What the user typed, pushed here by the search field. Raw text —
+    /// `SearchQuery` decides what it means, and refuses anything that would not
+    /// narrow the tree.
+    var searchText = "" {
+        didSet { untrackedSearchText = searchText }
+    }
+
+    /// The same string, readable without registering an observation.
+    ///
+    /// The search box lives in the toolbar. Any observed read of `searchText`
+    /// from there re-renders the toolbar on every keystroke, and SwiftUI
+    /// answers that by tearing the `NSSearchField` down and building a new one
+    /// — which retakes focus, and taking focus selects all the text. That is
+    /// what made the field unusable past one character.
+    @ObservationIgnored private(set) var untrackedSearchText = ""
+
+    /// Bumped when something other than typing changes the query — a new scan
+    /// clearing it. The field syncs from the model only then.
+    private(set) var searchResetToken = 0
+
+    var searchScope: SearchScope = .everywhere {
+        didSet {
+            guard searchScope != oldValue, searchMask != nil else { return }
+            applyScope()
+        }
+    }
+
+    /// What survives the current query, or nil when nothing is being searched.
+    private(set) var searchMask: SearchMask?
+    private(set) var searchPhase: SearchPhase = .idle
+    /// Bumped whenever the mask is replaced or dropped. The visualisations cache
+    /// their geometry, so they need something to key a rebuild on — exactly what
+    /// `treeVersion` does for the tree itself.
+    private(set) var searchVersion = 0
+    private var searchTask: Task<Void, Never>?
+
+    /// Where the user stood when the search took over, so clearing it can put
+    /// them back. Carries its own `scanID`: indices from a previous scan are
+    /// meaningless, and a stale trail would be worse than no restore at all.
+    private var placeBeforeSearch: (trail: [Int32], others: [Int32]?, scanID: Int)?
+    /// The trail the recentring itself produced, compared against the current one
+    /// to tell "the search moved me" from "I walked off on my own".
+    private var focusedTrail: [Int32]?
+    /// Query the last recentring was done for. A running scan rebuilds the mask
+    /// two or three times a second, and recentring on each of them would drag the
+    /// view around while the tree fills in.
+    private var focusedFor: String?
+
+    var isFiltering: Bool { searchMask != nil }
+
+    /// Whether there is a tree to search and a view drawing the field. The
+    /// breadcrumb bar — and with it the field — only exists in the browsing
+    /// views, so ⌘F has to be dark everywhere else.
+    var canSearch: Bool {
+        store != nil && Presentation.browsing.contains(presentation)
+    }
+
+    /// Bumped by the Rechercher command. The field watches it and takes focus:
+    /// a menu item has no other way to reach a control buried in the detail.
+    private(set) var focusSearchRequests = 0
+
+    func requestSearchFocus() {
+        focusSearchRequests += 1
+    }
+
+    /// Files the current query away for the magnifying glass menu.
+    ///
+    /// Only queries that found something: offering a typo back as a suggestion
+    /// makes the list a record of mistakes. Called when the user leaves a query
+    /// behind, never per keystroke.
+    func rememberSearch() {
+        guard let mask = searchMask, !mask.isEmpty else { return }
+        Preferences.shared.rememberSearch(mask.query.text)
+    }
+
+    /// Everything the mask depends on, folded into one value a view can key its
+    /// `.task` on.
+    ///
+    /// The scope is deliberately absent, and so is `treeVersion`: the first
+    /// changes nothing about the mask, and the second moves on every step of
+    /// navigation.
+    struct SearchKey: Hashable {
+        var scanID: Int
+        var contentVersion: Int
+        var text: String
+        var useLogical: Bool
+        var filtersTree: Bool
+    }
+
+    var searchKey: SearchKey {
+        SearchKey(
+            scanID: scanID, contentVersion: contentVersion,
+            text: searchText, useLogical: useLogicalSize,
+            filtersTree: Presentation.browsing.contains(presentation)
+        )
     }
 
     /// Set while the uninstall sheet is up, and while it is being built.
@@ -363,6 +494,7 @@ final class ScanModel {
         selection = []
         result = nil
         partialStore = nil
+        resetSearch()
         junkTask?.cancel()
         junkReport = nil
         junkPhase = .idle
@@ -407,7 +539,7 @@ final class ScanModel {
                 // Deliberately not a new scanID: indices are append-only within
                 // a scan, so the final tree agrees with the last snapshot and
                 // the view settles into it rather than flashing.
-                refreshRows()
+                treeDidChange()
                 // The Cleanup view sat out the scan showing its progress; its
                 // `.task` fired at scan *start*, when there was no tree yet, so
                 // the finished tree has to hand it the report itself.
@@ -484,6 +616,7 @@ final class ScanModel {
         rows = []
         selection = []
         partialStore = nil
+        resetSearch()
         junkReport = nil
         junkPhase = .idle
         junkSelection = []
@@ -497,7 +630,7 @@ final class ScanModel {
         rootPath = path
         scannedAt = entry.scan.date
         phase = .loaded
-        refreshRows()
+        treeDidChange()
     }
 
     func cancel() {
@@ -514,7 +647,7 @@ final class ScanModel {
             )
             partialStore = nil
             phase = .loaded
-            refreshRows()
+            treeDidChange()
             // A cancelled scan still ends one: same hand-off as a finished scan.
             if presentation == .cleanup, rootPath == "/" { rescanJunk() }
         } else {
@@ -531,7 +664,7 @@ final class ScanModel {
     private func apply(partial tree: NodeStore) {
         guard isScanning else { return }
         partialStore = tree
-        refreshRows()
+        treeDidChange()
     }
 
     // MARK: - Navigation
@@ -588,15 +721,8 @@ final class ScanModel {
     /// where the user currently stands.
     func reveal(_ node: Int32) {
         guard let store, node >= 0, Int(node) < store.count else { return }
-        var ancestors: [Int32] = []
-        var current = node
-        while current != 0 {
-            ancestors.append(current)
-            current = store.parent[Int(current)]
-        }
-        ancestors.append(0)
         othersScope = nil
-        trail = ancestors.reversed()
+        trail = ancestry(of: node)
 
         // Standing *inside* a file is not a thing, and neither is standing
         // inside a folder the scanner collapsed: show it selected in its parent.
@@ -619,23 +745,70 @@ final class ScanModel {
         refreshRows()
     }
 
+    /// Path from the scan root down to `node`, which is what `trail` is.
+    private func ancestry(of node: Int32) -> [Int32] {
+        guard let store, node >= 0, Int(node) < store.count else { return [0] }
+        var ancestors: [Int32] = []
+        var current = node
+        while current != 0 {
+            ancestors.append(current)
+            current = store.parent[Int(current)]
+        }
+        ancestors.append(0)
+        return ancestors.reversed()
+    }
+
     // MARK: - Reading
 
+    /// Size to *show* for a node, which under a filter is only the part of it
+    /// that matched. The single place the rest of the app reads a size from, so
+    /// the rows, the charts, the status bar and the inspector cannot disagree.
     func size(of node: Int32) -> Int64 {
         guard let store else { return 0 }
-        return useLogicalSize
-            ? store.totalLogical[Int(node)] : store.totalAlloc[Int(node)]
+        return store.size(of: node, useLogical: useLogicalSize, through: searchMask)
+    }
+
+    /// Size a node really is, whatever is being searched for.
+    ///
+    /// What anything describing an *item* rather than the view has to report:
+    /// the inspector sits above a "move to Trash" button, and a filtered figure
+    /// there would understate what is about to go.
+    func trueSize(of node: Int32) -> Int64 {
+        guard let store else { return 0 }
+        return store.size(of: node, useLogical: useLogicalSize, through: nil)
+    }
+
+    /// An entered "others" slice as the views should draw it: what the
+    /// aggregation stood for, minus whatever a deletion or a filter has taken
+    /// out of it since.
+    var visibleOthersScope: [Int32]? {
+        guard let othersScope, let store else { return othersScope }
+        return othersScope.filter {
+            !store.flags[Int($0)].contains(.deleted)
+                && (searchMask?.keeps($0) ?? true)
+        }
+    }
+
+    /// Records that the tree itself changed, not just where we are standing in
+    /// it. Anything derived from the whole store — the search mask above all —
+    /// keys off `contentVersion` so that walking around costs nothing.
+    private func treeDidChange() {
+        contentVersion += 1
+        refreshRows()
     }
 
     private func refreshRows() {
         treeVersion += 1
         guard let store else { rows = []; return }
-        if let othersScope {
+        if othersScope != nil {
             // Already ordered largest first by the layout that built the slice.
-            rows = othersScope.filter { !store.flags[Int($0)].contains(.deleted) }
+            rows = visibleOthersScope ?? []
         } else {
             rows = Signposts.measure("refreshRows") {
-                store.childrenSortedBySize(of: currentNode, useLogical: useLogicalSize)
+                store.childrenSortedBySize(
+                    of: currentNode, useLogical: useLogicalSize,
+                    through: searchMask
+                )
             }
         }
         selection = selection.filter { !store.flags[Int($0)].contains(.deleted) }
@@ -739,7 +912,7 @@ final class ScanModel {
         selection = []
         junkSelection = []
         deletionEpoch += 1
-        refreshRows()
+        treeDidChange()
         refreshJunkIfShown()
     }
 
@@ -766,7 +939,7 @@ final class ScanModel {
             ? "Restauration effectuée."
             : "\(failures.count) élément(s) n'ont pas pu être restaurés."
         deletionEpoch += 1
-        refreshRows()
+        treeDidChange()
         refreshJunkIfShown()
     }
 
@@ -900,7 +1073,7 @@ final class ScanModel {
         present(report)
         selection = []
         deletionEpoch += 1
-        refreshRows()
+        treeDidChange()
         refreshJunkIfShown()
     }
 
@@ -986,6 +1159,10 @@ final class ScanModel {
             largeFilesPhase = .idle
             return
         }
+        // A mask on its way in will change the answer, and the key moves again
+        // when it lands. Keeping the previous list beats flashing an unfiltered
+        // one for the length of the debounce.
+        guard searchPhase != .running else { return }
         largeFilesTask?.cancel()
         largeFilesPhase = .running
         let node = currentNode
@@ -995,12 +1172,14 @@ final class ScanModel {
         // would make the cutoff mean something slightly different at each end
         // of the tree.
         let cutoff = largeFilesAgeFilter.cutoff()
+        let filter = searchMask
         largeFilesTask = Task { [weak self] in
             let top = await Task.detached {
                 Signposts.measure("largestFiles") {
                     LargestFiles.top(
                         in: store, under: node,
-                        useLogical: useLogical, modifiedBefore: cutoff
+                        useLogical: useLogical, modifiedBefore: cutoff,
+                        filter: filter
                     )
                 }
             }.value
@@ -1010,6 +1189,149 @@ final class ScanModel {
             largeFiles = top
             largeFilesPhase = .ready
         }
+    }
+
+    // MARK: - Search
+
+    /// Called by the browser whenever `searchKey` changes.
+    ///
+    /// Runs off the main actor exactly like `ensureLargeFiles`, and for the same
+    /// `NodeStore`-is-Sendable reason: handing a struct of arrays to a detached
+    /// task copies nothing while nobody mutates it.
+    func ensureSearchMask() {
+        guard Presentation.browsing.contains(presentation),
+              let store, let query = SearchQuery(searchText)
+        else {
+            clearSearch()
+            return
+        }
+
+        searchTask?.cancel()
+        searchPhase = .running
+        let useLogical = useLogicalSize
+        let id = scanID
+
+        searchTask = Task { [weak self] in
+            // Typing is a stream of keystrokes, not a stream of questions. One
+            // pass over every name in the store per keypress makes the field
+            // feel gummy, and every pass but the last is thrown away anyway.
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+
+            let mask = await Task.detached {
+                Signposts.measure("searchMask") {
+                    SearchMask.build(
+                        store: store, query: query, useLogical: useLogical
+                    )
+                }
+            }.value
+
+            guard let self, !Task.isCancelled, self.scanID == id else { return }
+            apply(mask)
+        }
+    }
+
+    private func apply(_ mask: SearchMask) {
+        if placeBeforeSearch == nil {
+            placeBeforeSearch = (trail, othersScope, scanID)
+        }
+        searchMask = mask
+        searchPhase = .ready
+        searchVersion += 1
+        if searchScope == .everywhere, focusedFor != mask.query.text {
+            recenter(using: mask)
+            focusedFor = mask.query.text
+        }
+        refreshRows()
+    }
+
+    /// Drops the filter and, if the user has not walked away since, puts them
+    /// back where the search found them.
+    private func clearSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        guard searchMask != nil || searchPhase != .idle else { return }
+        searchMask = nil
+        searchPhase = .idle
+        searchVersion += 1
+
+        // Only when the recentring is still the reason they are standing here.
+        // Yanking someone out of a folder they deliberately opened is how a
+        // filter stops being trusted.
+        if let place = placeBeforeSearch, place.scanID == scanID,
+           trail == focusedTrail {
+            trail = validated(place.trail)
+            othersScope = place.others
+        }
+        forgetSearchPlace()
+        refreshRows()
+    }
+
+    /// Moves onto the closest folder that holds every result.
+    private func recenter(using mask: SearchMask) {
+        guard let store else { return }
+        let path = ancestry(of: mask.focus(from: 0, in: store))
+        guard path != trail else {
+            focusedTrail = trail
+            return
+        }
+        othersScope = nil
+        trail = path
+        focusedTrail = path
+    }
+
+    /// Switching scope moves the view and nothing else: "Tout" recentres on the
+    /// results wherever they are, "Ici" hands back the folder the user was
+    /// standing in when they started typing.
+    private func applyScope() {
+        guard let mask = searchMask else { return }
+        switch searchScope {
+        case .everywhere:
+            recenter(using: mask)
+            focusedFor = mask.query.text
+        case .here:
+            if let place = placeBeforeSearch, place.scanID == scanID {
+                othersScope = nil
+                trail = validated(place.trail)
+                focusedTrail = trail
+            }
+            focusedFor = nil
+        }
+        refreshRows()
+    }
+
+    private func forgetSearchPlace() {
+        placeBeforeSearch = nil
+        focusedTrail = nil
+        focusedFor = nil
+    }
+
+    /// A trail that may have gone stale — a folder trashed while the filter was
+    /// up — truncated at the first entry that no longer holds.
+    private func validated(_ candidate: [Int32]) -> [Int32] {
+        guard let store else { return [0] }
+        var result: [Int32] = [0]
+        for node in candidate.dropFirst() {
+            guard Int(node) < store.count,
+                  !store.flags[Int(node)].contains(.deleted)
+            else { break }
+            result.append(node)
+        }
+        return result
+    }
+
+    /// Wipes every trace of a search. A fresh tree starts unfiltered: keeping
+    /// the query would land the user at the bottom of an arbitrary branch of a
+    /// disk they only just asked to look at.
+    private func resetSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        searchText = ""
+        searchResetToken += 1
+        searchMask = nil
+        searchPhase = .idle
+        searchVersion += 1
+        forgetSearchPlace()
     }
 
     func toggleJunk(_ node: Int32) {

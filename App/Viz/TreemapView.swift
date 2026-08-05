@@ -75,6 +75,7 @@ struct TreemapView: View {
             .onChange(of: model.currentNode) { rebuild(in: lastSize) }
             .onChange(of: model.useLogicalSize) { rebuild(in: lastSize) }
             .onChange(of: model.treeVersion) { rebuild(in: lastSize) }
+            .onChange(of: model.searchVersion) { rebuild(in: lastSize) }
         }
     }
 
@@ -87,10 +88,11 @@ struct TreemapView: View {
         tiles = TreemapLayout.build(
             store: store,
             root: model.currentNode,
-            children: model.othersScope,
+            children: model.visibleOthersScope,
             in: CGRect(origin: .zero, size: size),
             maxDepth: Self.maxDepth,
-            useLogicalSize: model.useLogicalSize
+            useLogicalSize: model.useLogicalSize,
+            filter: model.searchMask
         )
         hovered = nil
         menuTarget = nil
