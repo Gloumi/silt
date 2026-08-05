@@ -74,9 +74,9 @@ struct QuickLocation: Identifiable, Hashable {
             QuickLocation(
                 name: "Bibliothèque", path: home + "/Library", symbol: "building.columns"
             ),
-            QuickLocation(
-                name: "Applications", path: "/Applications", symbol: "square.grid.2x2"
-            ),
+            // No /Applications here: the Applications tool covers it, and
+            // better — it counts what each app keeps under ~/Library too.
+            // Anyone who wants the folder as a tree can still add it by hand.
         ]
         return candidates.filter {
             FileManager.default.fileExists(atPath: $0.path)

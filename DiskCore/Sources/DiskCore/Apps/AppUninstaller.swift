@@ -79,7 +79,12 @@ public enum AppUninstaller {
 
     /// Folders macOS applications actually write to, with the label shown in the
     /// UI. Both the user's library and the machine-wide one.
-    private static var searchLocations: [(label: String, path: String)] {
+    ///
+    /// Public, like `InstalledApps.searchDirectories`: where the uninstaller
+    /// looks is part of what it is. `InstalledApps` sweeps the same folders for
+    /// every installed app at once, and passing others is how the tests keep
+    /// away from a real library.
+    public static var searchLocations: [(label: String, path: String)] {
         let home = NSHomeDirectory()
         let user: [(String, String)] = [
             ("Application Support", "/Library/Application Support"),
@@ -106,6 +111,7 @@ public enum AppUninstaller {
 
     public static func leftovers(for app: AppBundle) -> [Leftover] {
         let manager = FileManager.default
+        let key = Key(app)
         var found: [Leftover] = []
         var seen: Set<String> = []
 
@@ -118,7 +124,7 @@ public enum AppUninstaller {
                 let path = location.path + "/" + entry
                 // The bundle itself is presented separately, never as debris.
                 guard path != app.path, !seen.contains(path) else { continue }
-                guard let confidence = classify(entry: entry, app: app) else {
+                guard let confidence = classify(entry: entry, key: key) else {
                     continue
                 }
                 seen.insert(path)
@@ -140,13 +146,53 @@ public enum AppUninstaller {
         }
     }
 
+    /// The parts of an application the classifier actually compares against,
+    /// lowercased once instead of once per entry.
+    ///
+    /// Matching a single app against a library folder, the saving is nothing.
+    /// Matching a hundred and fifty of them against every folder — what the
+    /// Applications view does — it is the difference between a moment and a
+    /// visible pause.
+    struct Key: Sendable {
+        /// Nil rather than empty: an app without an identifier matches on its
+        /// name alone.
+        let bundleID: String?
+        /// `com.spotify.client` → `com.spotify.`, the publisher's namespace.
+        let vendor: String?
+        /// Nil when the name is too short to discriminate.
+        let name: String?
+
+        init(_ app: AppBundle) {
+            let identifier = app.bundleID?.lowercased()
+            bundleID = (identifier?.isEmpty ?? true) ? nil : identifier
+            vendor = bundleID.flatMap(AppUninstaller.vendorPrefix(of:))
+            // Names are only discriminating once they are long enough. "Go",
+            // "X" or "Notes" as a substring would match half the library.
+            let appName = app.name.lowercased()
+            name = appName.count >= 4 ? appName : nil
+        }
+    }
+
     /// How an entry name relates to the application, or nil if not at all.
     static func classify(entry: String, app: AppBundle) -> LeftoverConfidence? {
-        let stem = (entry as NSString).deletingPathExtension
-        let lowerEntry = entry.lowercased()
-        let lowerStem = stem.lowercased()
+        classify(entry: entry, key: Key(app))
+    }
 
-        if let bundleID = app.bundleID?.lowercased(), !bundleID.isEmpty {
+    static func classify(entry: String, key: Key) -> LeftoverConfidence? {
+        let lowerEntry = entry.lowercased()
+        return classify(
+            entry: lowerEntry,
+            stem: (lowerEntry as NSString).deletingPathExtension,
+            key: key
+        )
+    }
+
+    /// The hot form: both strings are already lowercased by the caller, which
+    /// only pays for the folding once per directory entry.
+    static func classify(
+        entry lowerEntry: String, stem lowerStem: String, key: Key
+    ) -> LeftoverConfidence? {
+        if let bundleID = key.bundleID {
             // `com.x.y`, `com.x.y.plist`, `com.x.y.helper`, `com.x.y.savedState`
             if lowerStem == bundleID || lowerEntry == bundleID { return .certain }
             if lowerEntry.hasPrefix(bundleID + ".") { return .certain }
@@ -156,16 +202,12 @@ public enum AppUninstaller {
             // A same-vendor sibling: `com.spotify.` matches every Spotify
             // product, which is why this is the weakest tier and stays
             // unticked.
-            if let vendor = vendorPrefix(of: bundleID),
-               lowerEntry.hasPrefix(vendor) {
+            if let vendor = key.vendor, lowerEntry.hasPrefix(vendor) {
                 return .possible
             }
         }
 
-        // Names are only discriminating once they are long enough. "Go", "X" or
-        // "Notes" as a substring would match half the library.
-        let appName = app.name.lowercased()
-        guard appName.count >= 4 else { return nil }
+        guard let appName = key.name else { return nil }
         if lowerStem == appName { return .probable }
         if lowerEntry.contains(appName) { return .possible }
         return nil

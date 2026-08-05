@@ -98,6 +98,9 @@ struct ContentView: View {
     /// Owned here rather than by ScanModel: the reboot measurement has
     /// nothing to do with the scan lifecycle and survives all its resets.
     @State private var reboot = RebootModel()
+    /// Owned here for the same reason: the inventory of installed applications
+    /// is taken from the filesystem directly, with or without a scan.
+    @State private var apps = AppsModel()
     /// Token for the space-key monitor, held so reopening the window never
     /// installs a second one — two monitors would toggle the preview twice,
     /// which is to say not at all.
@@ -130,10 +133,10 @@ struct ContentView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
         } detail: {
-            BrowserView(model: model, reboot: reboot)
+            BrowserView(model: model, reboot: reboot, apps: apps)
         }
         .inspector(isPresented: $showsInspector) {
-            InspectorView(model: model)
+            InspectorView(model: model, apps: apps)
                 .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
         }
         .sheet(isPresented: Bindable(model).showsWelcome) {

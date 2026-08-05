@@ -76,6 +76,21 @@ struct SidebarView: View {
             }
 
             Section("Outils") {
+                row(isSelected: model.showsApps, action: model.showApps) {
+                    Label {
+                        Text("Applications")
+                    } icon: {
+                        if let icon = Self.applicationsIcon {
+                            Image(nsImage: icon)
+                                .renderingMode(.template)
+                                .resizable()
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: "app.badge")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 row(isSelected: model.showsCleanup, action: model.showCleanup) {
                     Label("Nettoyage", systemImage: "wand.and.sparkles")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -116,6 +131,20 @@ struct SidebarView: View {
     private func refreshVolumes() {
         volumes = Volumes.mounted()
     }
+
+    /// The glyph the Finder itself puts beside Applications in its sidebar.
+    ///
+    /// `NSWorkspace.icon(forFile: "/Applications")` gives the full-colour
+    /// folder, which shouts next to rows drawn in a single tint. The artwork
+    /// ships black, so it has to be marked as a template — otherwise it
+    /// disappears into a dark sidebar. Nil on a system that has moved it,
+    /// and the row falls back to a symbol.
+    private static let applicationsIcon: NSImage? = {
+        let icon = NSImage(contentsOfFile: "/System/Library/CoreServices"
+            + "/CoreTypes.bundle/Contents/Resources/SidebarApplicationsFolder.icns")
+        icon?.isTemplate = true
+        return icon
+    }()
 
     /// One selectable row.
     ///

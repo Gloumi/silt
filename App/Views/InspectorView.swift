@@ -5,10 +5,16 @@ import SwiftUI
 
 struct InspectorView: View {
     let model: ScanModel
+    let apps: AppsModel
 
     var body: some View {
         Group {
-            if model.selection.count > 1 {
+            // A tool holds the window: whatever folder was selected before
+            // arriving here is no longer what is on screen, and describing it
+            // would point every action at the wrong thing.
+            if ScanModel.Presentation.tools.contains(model.presentation) {
+                toolInspector
+            } else if model.selection.count > 1 {
                 MultipleSelection(model: model)
             } else if let scope = model.othersScope, model.selection.isEmpty {
                 // Standing inside an aggregated slice. Describing the parent
@@ -27,6 +33,181 @@ struct InspectorView: View {
         .frame(minWidth: 240)
     }
 
+    /// Applications is the one tool with something to inspect: a row stands for
+    /// a real bundle on disk. Cleanup and Reboot list findings that are already
+    /// described where they are shown.
+    @ViewBuilder
+    private var toolInspector: some View {
+        if model.presentation == .apps, let item = apps.selectedItem {
+            AppDetails(model: model, apps: apps, item: item)
+        } else {
+            ContentUnavailableView(
+                "Aucune sélection", systemImage: "sidebar.right",
+                description: Text(
+                    model.presentation == .apps
+                        ? "Sélectionnez une application pour voir son détail."
+                        : "\(model.presentation.label) présente ses résultats au centre."
+                )
+            )
+        }
+    }
+}
+
+// MARK: - One application
+
+/// The same panel a `.app` gets when it is picked out of a scanned tree, for an
+/// application that was never scanned at all.
+private struct AppDetails: View {
+    let model: ScanModel
+    let apps: AppsModel
+    let item: AppsModel.Item
+
+    private var path: String { item.app.path }
+    private var verdict: DeletionVerdict { DenyList.verdict(for: path) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+
+                LabeledContent("Taille") {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(Format.bytes(item.total))
+                            .monospacedDigit()
+                        Text(breakdown)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("Dernière utilisation") {
+                    Text(lastUsed)
+                        .help(item.installed.lastUsed
+                            .flatMap { Format.exactDate(unixSeconds: $0) } ?? "")
+                }
+                if let identifier = item.app.bundleID {
+                    LabeledContent("Identifiant") {
+                        Text(identifier)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+                LabeledContent("Emplacement") {
+                    Text((path as NSString).deletingLastPathComponent)
+                        .lineLimit(3)
+                        .truncationMode(.head)
+                        .textSelection(.enabled)
+                }
+
+                if item.isRunning {
+                    Callout(
+                        text: "Application en cours d'exécution. Silt proposera de la quitter avant de la désinstaller.",
+                        tone: .neutral
+                    )
+                }
+                if apps.isSelf(item) {
+                    Callout(
+                        text: "C'est Silt. Une application ne peut pas se supprimer elle-même pendant qu'elle tourne.",
+                        tone: .blocked
+                    )
+                } else if let message = verdict.message {
+                    Callout(
+                        text: message,
+                        tone: verdict.isForbidden ? .blocked : .warning
+                    )
+                }
+
+                Divider()
+                actions
+            }
+            .padding(14)
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(nsImage: apps.icon(for: path))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 52, height: 52)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.app.name)
+                    .font(.headline)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                Text("Application")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            // Beside the name rather than down with the others: launching an
+            // app is not one of the disk actions, and it needs no wording next
+            // to the icon it belongs to.
+            Button(action: open) {
+                Image(systemName: "arrow.up.forward.app")
+                    .font(.title3)
+            }
+            .buttonStyle(.borderless)
+            .help("Ouvrir « \(item.app.name) »")
+            .accessibilityLabel("Ouvrir")
+        }
+    }
+
+    private func open() {
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: path),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
+
+    /// Three states, and they are not interchangeable: still counting, counted
+    /// and found nothing, counted and found something.
+    private var breakdown: String {
+        guard let leftovers = item.leftoverBytes else {
+            return "recherche des fichiers liés…"
+        }
+        guard leftovers > 0 else {
+            return Format.bytes(item.app.bytes) + " · aucun fichier lié"
+        }
+        return Format.bytes(item.app.bytes) + " + "
+            + Format.bytes(leftovers) + " liés"
+    }
+
+    private var lastUsed: String {
+        guard let used = item.installed.lastUsed,
+              let age = Format.age(unixSeconds: used)
+        else { return "inconnue" }
+        return age
+    }
+
+    private var actions: some View {
+        VStack(spacing: 8) {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    [URL(fileURLWithPath: path)]
+                )
+            } label: {
+                Label("Afficher dans le Finder", systemImage: "folder")
+                    .frame(maxWidth: .infinity)
+            }
+            .keyboardShortcut("r")
+
+            // No plain "move to trash": trashing the bundle alone leaves behind
+            // exactly what this tool exists to find.
+            Button(role: .destructive) {
+                model.prepareUninstall(appPath: path)
+            } label: {
+                Label(
+                    model.uninstallPhase == .preparing
+                        ? "Recherche des fichiers liés…"
+                        : "Désinstaller l'application…",
+                    systemImage: "trash.slash"
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .disabled(model.uninstallPhase == .preparing || apps.isSelf(item))
+        }
+    }
 }
 
 // MARK: - Aggregated slice

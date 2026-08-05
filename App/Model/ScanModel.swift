@@ -18,12 +18,12 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, treemap, list, largeFiles, cleanup, reboot
+        case sunburst, treemap, list, largeFiles, apps, cleanup, reboot
         var id: String { rawValue }
 
-        /// The four ways of looking at the tree. Cleanup and Reboot are not
-        /// among them: each is a destination of its own, reached from the
-        /// sidebar.
+        /// The four ways of looking at the tree. Applications, Cleanup and
+        /// Reboot are not among them: each is a destination of its own, reached
+        /// from the sidebar.
         static let browsing: [Presentation] = [.sunburst, .treemap, .list, .largeFiles]
 
         /// The three ways of *standing in* a folder. Large files browses the
@@ -35,12 +35,18 @@ final class ScanModel {
         /// something in these and nowhere else.
         static let charts: [Presentation] = [.sunburst, .treemap]
 
+        /// The destinations that are not a view of the tree. Each shows its own
+        /// findings, so the inspector must not go on describing whatever folder
+        /// was selected before arriving here.
+        static let tools: [Presentation] = [.apps, .cleanup, .reboot]
+
         var label: String {
             switch self {
             case .sunburst: "Anneaux"
             case .treemap: "Blocs"
             case .list: "Liste"
             case .largeFiles: "Fichiers volumineux"
+            case .apps: "Applications"
             case .cleanup: "Nettoyage"
             case .reboot: "Redémarrage"
             }
@@ -51,6 +57,7 @@ final class ScanModel {
             case .treemap: "square.grid.2x2"
             case .list: "list.bullet"
             case .largeFiles: "doc.text.magnifyingglass"
+            case .apps: "app.badge"
             case .cleanup: "wand.and.sparkles"
             case .reboot: "restart.circle"
             }
@@ -63,6 +70,7 @@ final class ScanModel {
             case .treemap: "Blocs — surface proportionnelle à la taille"
             case .list: "Liste — éléments triés par taille"
             case .largeFiles: "Fichiers volumineux — les plus gros du dossier et de ses sous-dossiers"
+            case .apps: "Applications — ce que chaque application occupe, bundle et fichiers liés"
             case .cleanup: "Nettoyage — caches et fichiers récupérables"
             case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
             }
@@ -1003,11 +1011,20 @@ final class ScanModel {
         return store.name(of: node).lowercased().hasSuffix(".app")
     }
 
-    /// Gathers the bundle and its leftovers. Off the main actor: it stats every
-    /// candidate under `~/Library`, which is far too much for a button press.
+    /// The inspector's route in: an application picked out of a scanned tree.
     func prepareUninstall(_ node: Int32) {
         guard let store, isApplication(node) else { return }
-        let path = store.path(of: node)
+        prepareUninstall(appPath: store.path(of: node), node: node)
+    }
+
+    /// Gathers the bundle and its leftovers. Off the main actor: it stats every
+    /// candidate under `~/Library`, which is far too much for a button press.
+    ///
+    /// The node is optional because the Applications view knows nothing of any
+    /// tree — it lists `/Applications` itself, scan or no scan. Everything
+    /// downstream was already built for that: `UninstallPlan.node` is optional,
+    /// and `uninstall` only rolls a deletion back up when there is a node.
+    func prepareUninstall(appPath path: String, node: Int32? = nil) {
         uninstallPhase = .preparing
 
         Task { [weak self] in
@@ -1111,6 +1128,12 @@ final class ScanModel {
     func showReboot() { presentation = .reboot }
 
     var showsReboot: Bool { presentation == .reboot }
+
+    /// "Applications" entry in the sidebar. Never scans either: the list walks
+    /// `/Applications` on its own, so the tool works before any volume is read.
+    func showApps() { presentation = .apps }
+
+    var showsApps: Bool { presentation == .apps }
 
     /// After a deletion or an undo. Only worth redoing if a report is already on
     /// screen — otherwise the next visit to the Cleanup view will build it.

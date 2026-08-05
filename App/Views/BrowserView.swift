@@ -7,6 +7,7 @@ import SwiftUI
 struct BrowserView: View {
     let model: ScanModel
     let reboot: RebootModel
+    let apps: AppsModel
 
     var body: some View {
         Group {
@@ -25,6 +26,11 @@ struct BrowserView: View {
                 CleanupView(model: model)
             } else if model.presentation == .reboot {
                 RebootView(model: model, reboot: reboot)
+            } else if model.presentation == .apps {
+                // Also a destination, and the one that owes the scan the least:
+                // it lists /Applications itself, so it works with no volume
+                // read at all.
+                AppsView(model: model, apps: apps)
             } else if model.needsScan {
                 // The sidebar points somewhere unread. Showing the previous
                 // tree here would attach it to the wrong name.
@@ -75,7 +81,7 @@ struct BrowserView: View {
                         LargeFilesView(model: model, store: store)
                     // The tools never reach here — the body branches to their
                     // views before this — but the switch must cover them.
-                    case .list, .cleanup, .reboot:
+                    case .list, .apps, .cleanup, .reboot:
                         entryList(store: store, parentSize: parentSize)
                     }
                 }
