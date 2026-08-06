@@ -18,7 +18,7 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, treemap, list, largeFiles, apps, cleanup, reboot
+        case sunburst, treemap, list, largeFiles, apps, cleanup, reboot, snapshots
         var id: String { rawValue }
 
         /// The four ways of looking at the tree. Applications, Cleanup and
@@ -38,7 +38,7 @@ final class ScanModel {
         /// The destinations that are not a view of the tree. Each shows its own
         /// findings, so the inspector must not go on describing whatever folder
         /// was selected before arriving here.
-        static let tools: [Presentation] = [.apps, .cleanup, .reboot]
+        static let tools: [Presentation] = [.apps, .cleanup, .reboot, .snapshots]
 
         var label: String {
             switch self {
@@ -47,8 +47,9 @@ final class ScanModel {
             case .list: "Liste"
             case .largeFiles: "Fichiers volumineux"
             case .apps: "Applications"
-            case .cleanup: "Nettoyage"
+            case .cleanup: "Caches et résidus"
             case .reboot: "Redémarrage"
+            case .snapshots: "Snapshots"
             }
         }
         var symbol: String {
@@ -60,6 +61,7 @@ final class ScanModel {
             case .apps: "app.badge"
             case .cleanup: "wand.and.sparkles"
             case .reboot: "restart.circle"
+            case .snapshots: "clock.arrow.circlepath"
             }
         }
 
@@ -71,8 +73,9 @@ final class ScanModel {
             case .list: "Liste — éléments triés par taille"
             case .largeFiles: "Fichiers volumineux — les plus gros du dossier et de ses sous-dossiers"
             case .apps: "Applications — ce que chaque application occupe, bundle et fichiers liés"
-            case .cleanup: "Nettoyage — caches et fichiers récupérables"
+            case .cleanup: "Caches et résidus — ce que vos outils régénèrent tout seuls"
             case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
+            case .snapshots: "Snapshots — copies APFS locales qui retiennent de l'espace"
             }
         }
     }
@@ -1108,7 +1111,7 @@ final class ScanModel {
         rescanJunk()
     }
 
-    /// "Nettoyage" entry in the sidebar: the whole disk, every time.
+    /// "Caches et résidus" entry in the sidebar: the whole disk, every time.
     ///
     /// The tool is global by design — caches live under `~/Library`, `/Library`,
     /// `/private` — so it only ever speaks about the boot volume. A disk still
@@ -1134,6 +1137,22 @@ final class ScanModel {
     func showApps() { presentation = .apps }
 
     var showsApps: Bool { presentation == .apps }
+
+    /// "Snapshots" entry in the sidebar, and the purgeable line under every
+    /// volume gauge. `volume` says which one to open on; nil keeps whatever
+    /// the tool was already showing.
+    func showSnapshots(volume: String?) {
+        if let volume { snapshotVolumeRequest = volume }
+        presentation = .snapshots
+    }
+
+    var showsSnapshots: Bool { presentation == .snapshots }
+
+    /// The mount point the Snapshots view should scroll to on arrival. Set by
+    /// the sidebar, cleared by the view once it has honoured it — the model
+    /// carries the request rather than the answer, so nothing here needs to
+    /// know whether the tool is even on screen.
+    var snapshotVolumeRequest: String?
 
     /// After a deletion or an undo. Only worth redoing if a report is already on
     /// screen — otherwise the next visit to the Cleanup view will build it.
@@ -1404,8 +1423,12 @@ final class ScanModel {
         var parts: [String] = []
         if !report.trashed.isEmpty {
             let bytes = report.reclaimedBytes.formatted(.byteCount(style: .file))
+            // Not "purgeables": that word now means the space macOS itself
+            // holds back — snapshots and caches — and the Snapshots tool is
+            // built around it. Trashed bytes are freed by emptying the trash,
+            // which is a different gesture with a different button.
             parts.append(
-                "\(report.trashed.count) élément(s) à la corbeille — \(bytes) purgeables."
+                "\(report.trashed.count) élément(s) à la corbeille — \(bytes) libérés en la vidant."
             )
         }
         if !report.refused.isEmpty {
@@ -1432,6 +1455,20 @@ final class ScanModel {
             )
         }
         deletionMessage = parts.joined(separator: " ")
+    }
+
+    /// The banner, after the Snapshots tool has been at work.
+    ///
+    /// Its own entry point rather than a shared one: a deleted snapshot cannot
+    /// be restored, so `lastDeletion` must stay nil and the banner must not
+    /// grow an "Annuler" button it could not honour.
+    func reportSnapshotOutcome(_ message: String) {
+        guard !message.isEmpty else { return }
+        lastDeletion = nil
+        needsAppManagement = false
+        deletionMessage = message
+        // Moves the sidebar gauges now rather than at the next 30 s poll.
+        deletionEpoch += 1
     }
 
     /// The account owning this path, or nil when it is the current user's —

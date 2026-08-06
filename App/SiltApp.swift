@@ -101,6 +101,9 @@ struct ContentView: View {
     /// Owned here for the same reason: the inventory of installed applications
     /// is taken from the filesystem directly, with or without a scan.
     @State private var apps = AppsModel()
+    /// Owned here for the same reason again: snapshots are read from the
+    /// volumes themselves and have never been part of any tree.
+    @State private var snapshots = SnapshotsModel()
     /// Token for the space-key monitor, held so reopening the window never
     /// installs a second one — two monitors would toggle the preview twice,
     /// which is to say not at all.
@@ -133,7 +136,7 @@ struct ContentView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
         } detail: {
-            BrowserView(model: model, reboot: reboot, apps: apps)
+            BrowserView(model: model, reboot: reboot, apps: apps, snapshots: snapshots)
         }
         .inspector(isPresented: $showsInspector) {
             InspectorView(model: model, apps: apps)
@@ -155,6 +158,13 @@ struct ContentView: View {
                 plan: box.plan,
                 onCancel: { model.deletionPlan = nil },
                 onConfirm: { Task { await model.confirmDeletion() } }
+            )
+        }
+        .sheet(item: Bindable(snapshots).request) { request in
+            SnapshotDeletionSheet(
+                request: request,
+                onCancel: { snapshots.request = nil },
+                onConfirm: { Task { await snapshots.confirm(reporting: model) } }
             )
         }
         .sheet(item: Bindable(model).uninstallPlan) { plan in

@@ -1,45 +1,94 @@
 import AppKit
 import Foundation
 
-struct VolumeInfo: Identifiable, Hashable {
+struct VolumeInfo: Identifiable, Hashable, Sendable {
     let url: URL
     let name: String
     let totalBytes: Int64
+    /// Free right now, this instant, without macOS reclaiming anything first.
     let availableBytes: Int64
+    /// What the Finder calls "available": the free space plus everything macOS
+    /// would purge to make room — caches, the trash, and above all local APFS
+    /// snapshots. Always ≥ `availableBytes`.
+    let importantBytes: Int64
+    /// The stingier figure macOS applies to background downloads: it keeps a
+    /// reserve rather than filling the disk on their behalf. Shown in the
+    /// tooltip only, but it is the number that explains a download refused on
+    /// a disk the Finder calls free.
+    let opportunisticBytes: Int64
     let isInternal: Bool
 
     var id: URL { url }
-    var usedBytes: Int64 { max(0, totalBytes - availableBytes) }
+
+    /// The space macOS is holding but would give back — the whole reason the
+    /// Finder and a file-by-file total never agree.
+    var purgeableBytes: Int64 { max(0, importantBytes - availableBytes) }
+
+    /// Below a gigabyte the gap is noise — rounding, a few caches — and saying
+    /// so out loud in the sidebar would be alarming about nothing.
+    var hasPurgeable: Bool { purgeableBytes >= 1_000_000_000 }
+
+    /// Occupied in the Finder's sense: purgeable space counts as free, because
+    /// that is what the row above it announces.
+    var usedBytes: Int64 { max(0, totalBytes - importantBytes) }
     var usedFraction: Double {
         totalBytes > 0 ? Double(usedBytes) / Double(totalBytes) : 0
+    }
+    var purgeableFraction: Double {
+        totalBytes > 0 ? Double(purgeableBytes) / Double(totalBytes) : 0
     }
 }
 
 enum Volumes {
+    private static let keys: [URLResourceKey] = [
+        .volumeNameKey, .volumeTotalCapacityKey,
+        .volumeAvailableCapacityKey, .volumeIsBrowsableKey,
+        .volumeIsInternalKey, .volumeIsRootFileSystemKey,
+        .volumeAvailableCapacityForImportantUsageKey,
+        .volumeAvailableCapacityForOpportunisticUsageKey,
+    ]
+
     static func mounted() -> [VolumeInfo] {
-        let keys: [URLResourceKey] = [
-            .volumeNameKey, .volumeTotalCapacityKey,
-            .volumeAvailableCapacityKey, .volumeIsBrowsableKey,
-            .volumeIsInternalKey, .volumeIsRootFileSystemKey,
-        ]
         let urls = FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]
         ) ?? []
 
-        return urls.compactMap { url -> VolumeInfo? in
-            guard let values = try? url.resourceValues(forKeys: Set(keys)),
-                  values.volumeIsBrowsable == true,
-                  let total = values.volumeTotalCapacity, total > 0
-            else { return nil }
-            return VolumeInfo(
-                url: url,
-                name: values.volumeName ?? url.lastPathComponent,
-                totalBytes: Int64(total),
-                availableBytes: Int64(values.volumeAvailableCapacity ?? 0),
-                isInternal: values.volumeIsInternal ?? false
-            )
-        }
-        .sorted { $0.isInternal && !$1.isInternal }
+        return urls.compactMap { info(at: $0, browsableOnly: true) }
+            .sorted { $0.isInternal && !$1.isInternal }
+    }
+
+    /// One volume, re-read. Used to check what a deletion actually gave back:
+    /// APFS frees blocks on its own schedule, so the only honest answer to
+    /// "how much did that free" is to look again a moment later.
+    static func info(at path: String) -> VolumeInfo? {
+        info(at: URL(fileURLWithPath: path), browsableOnly: false)
+    }
+
+    private static func info(at url: URL, browsableOnly: Bool) -> VolumeInfo? {
+        guard let values = try? url.resourceValues(forKeys: Set(keys)),
+              !browsableOnly || values.volumeIsBrowsable == true,
+              let total = values.volumeTotalCapacity, total > 0
+        else { return nil }
+        let available = Int64(values.volumeAvailableCapacity ?? 0)
+        // The two usage keys are an APFS notion; a disk image, a network share
+        // or an HFS+ volume answers zero. Clamping to `available` makes those
+        // volumes fall back to exactly the old behaviour — no purgeable space,
+        // no second line, no claim we cannot support.
+        let important = max(
+            available, values.volumeAvailableCapacityForImportantUsage ?? 0
+        )
+        let opportunistic = max(
+            0, values.volumeAvailableCapacityForOpportunisticUsage ?? 0
+        )
+        return VolumeInfo(
+            url: url,
+            name: values.volumeName ?? url.lastPathComponent,
+            totalBytes: Int64(total),
+            availableBytes: available,
+            importantBytes: important,
+            opportunisticBytes: opportunistic,
+            isInternal: values.volumeIsInternal ?? false
+        )
     }
 }
 

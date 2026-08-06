@@ -6,6 +6,11 @@ options:
     macOS: "15.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
+  # The whole interface is written in French, so the bundle must say so.
+  # Left at the default "en", macOS resolved the app to en_FR on a French
+  # Mac — French number conventions, English month names — and every date
+  # printed as "August 6, 2026" under a French label.
+  developmentLanguage: fr
 
 packages:
   DiskCore:
@@ -25,6 +30,10 @@ targets:
       properties:
         CFBundleName: Silt
         CFBundleDisplayName: Silt
+        # Spelled out rather than left to $(DEVELOPMENT_LANGUAGE): with no
+        # .lproj in the bundle, this key is the only thing that tells CFBundle
+        # which language the app speaks, and every date format follows from it.
+        CFBundleDevelopmentRegion: fr
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)

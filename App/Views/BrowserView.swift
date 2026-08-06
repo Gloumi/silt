@@ -8,6 +8,7 @@ struct BrowserView: View {
     let model: ScanModel
     let reboot: RebootModel
     let apps: AppsModel
+    let snapshots: SnapshotsModel
 
     var body: some View {
         Group {
@@ -26,6 +27,10 @@ struct BrowserView: View {
                 CleanupView(model: model)
             } else if model.presentation == .reboot {
                 RebootView(model: model, reboot: reboot)
+            } else if model.presentation == .snapshots {
+                // The one destination no scan could ever feed: snapshots are
+                // invisible to a walk of the tree by design.
+                SnapshotsView(model: model, snapshots: snapshots)
             } else if model.presentation == .apps {
                 // Also a destination, and the one that owes the scan the least:
                 // it lists /Applications itself, so it works with no volume
@@ -81,7 +86,7 @@ struct BrowserView: View {
                         LargeFilesView(model: model, store: store)
                     // The tools never reach here — the body branches to their
                     // views before this — but the switch must cover them.
-                    case .list, .apps, .cleanup, .reboot:
+                    case .list, .apps, .cleanup, .reboot, .snapshots:
                         entryList(store: store, parentSize: parentSize)
                     }
                 }

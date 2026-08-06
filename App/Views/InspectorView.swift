@@ -467,7 +467,9 @@ private struct MultipleSelection: View {
 
 // MARK: - Pieces
 
-private struct Callout: View {
+/// Shared with the volume popover: an inline note with a tone, and the one
+/// component in the app for "here is something you should know before acting".
+struct Callout: View {
     enum Tone { case neutral, warning, blocked }
     let text: String
     let tone: Tone

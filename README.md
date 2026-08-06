@@ -104,8 +104,15 @@ Mesuré sur un MacBook 10 cœurs : **2,4 millions de fichiers en 15 s**, soit
 
 - Les **clones APFS** (fichiers partageant des blocs) sont comptés plusieurs
   fois. Les détecter demanderait un appel par bloc ; DaisyDisk a la même limite.
-- L'écart avec l'espace libre annoncé par le Finder vient des **snapshots APFS**
-  et de l'espace purgeable, qu'aucun parcours de fichiers ne peut voir.
+- L'écart entre le total d'un scan et l'espace libre du Finder vient de l'espace
+  qu'**macOS s'est réservé** — ce qu'il appelle « purgeable » — et qu'aucun parcours
+  de fichiers ne peut voir. Les jauges de volume l'affichent désormais, et l'outil
+  **Snapshots** liste les copies APFS locales qui en sont la cause la plus fréquente.
+  Aucune **taille par snapshot** n'est annoncée :
+  les snapshots partagent leurs blocs entre eux et avec le disque vivant, si bien
+  qu'aucun nombre par snapshot n'existe — macOS n'en publie d'ailleurs aucun.
+  Seul l'écart réel du volume, et ce qu'une suppression a effectivement libéré,
+  sont mesurés.
 - Dans un dossier replié, les liens durs sont dédupliqués au sein du sous-arbre,
   pas rétroactivement contre le reste du scan.
 

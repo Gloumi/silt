@@ -4,6 +4,8 @@ import SwiftUI
 struct SidebarView: View {
     let model: ScanModel
     @State private var volumes: [VolumeInfo] = []
+    /// The volume whose detail popover is open, if any.
+    @State private var detailVolume: VolumeInfo?
     @Bindable private var preferences = Preferences.shared
     private let locations = QuickLocation.standard()
 
@@ -12,7 +14,22 @@ struct SidebarView: View {
             Section("Volumes") {
                 ForEach(volumes) { volume in
                     row(path: volume.url.path, name: volume.name) {
-                        VolumeRow(volume: volume)
+                        VolumeRow(
+                            volume: volume,
+                            // Held here rather than in the row so the context
+                            // menu, which is attached outside it, can open the
+                            // same sheet.
+                            isShowingDetail: Binding(
+                                get: { detailVolume == volume },
+                                set: { detailVolume = $0 ? volume : nil }
+                            )
+                        )
+                    } menuItems: {
+                        Divider()
+                        Button("Détail du volume…") { detailVolume = volume }
+                        Button("Voir les snapshots APFS") {
+                            model.showSnapshots(volume: volume.url.path)
+                        }
                     }
                 }
             }
@@ -75,7 +92,10 @@ struct SidebarView: View {
                 }
             }
 
-            Section("Outils") {
+            // Not "Outils d'analyse": every one of the four ends in a
+            // destructive button, and a heading promising analysis would set
+            // exactly the wrong expectation in front of them.
+            Section("Outils de nettoyage") {
                 row(isSelected: model.showsApps, action: model.showApps) {
                     Label {
                         Text("Applications")
@@ -92,16 +112,29 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 row(isSelected: model.showsCleanup, action: model.showCleanup) {
-                    Label("Nettoyage", systemImage: "wand.and.sparkles")
+                    Label("Caches et résidus", systemImage: "wand.and.sparkles")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 row(isSelected: model.showsReboot, action: model.showReboot) {
                     Label("Redémarrage", systemImage: "restart.circle")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                row(
+                    isSelected: model.showsSnapshots,
+                    action: { model.showSnapshots(volume: nil) }
+                ) {
+                    Label("Snapshots", systemImage: "clock.arrow.circlepath")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .listStyle(.sidebar)
+        // Centred over the window rather than attached to the row: the
+        // breakdown is a page of figures, and a popover hanging off a 4 pt
+        // gauge in a 240 pt column had nowhere to put them.
+        .sheet(item: $detailVolume) { volume in
+            VolumeDetailSheet(model: model, volume: volume) { detailVolume = nil }
+        }
         .task {
             refreshVolumes()
             // Open pointing at the boot volume, without scanning it. Starting a
@@ -245,25 +278,82 @@ struct SidebarView: View {
 
 private struct VolumeRow: View {
     let volume: VolumeInfo
+    @Binding var isShowingDetail: Bool
+    @State private var isHovering = false
 
+    /// Two gestures, cleanly split: the name selects the volume as a scan root,
+    /// the gauge below opens its detail. Before this the row had a tap on the
+    /// whole of it *and* a second, invisible target on the purgeable line —
+    /// same row, two destinations, no way to tell which was which.
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Label(volume.name, systemImage: volume.isInternal ? "internaldrive" : "externaldrive")
                 .lineLimit(1)
 
-            CapacityBar(fraction: volume.usedFraction)
-                .frame(height: 4)
+            Button { isShowingDetail = true } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    CapacityBar(volume: volume)
+                        .frame(height: 4)
 
-            Text("\(Format.bytes(volume.availableBytes)) libres sur \(Format.bytes(volume.totalBytes))")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                    // The Finder's figure, not the instant one. Someone
+                    // comparing the two windows must read the same number in
+                    // both, or the gauge becomes one more thing to distrust.
+                    Text("\(Format.bytes(volume.importantBytes)) libres sur \(Format.bytes(volume.totalBytes))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .underline(isHovering)
+
+                    if volume.hasPurgeable {
+                        // "Réservés par macOS" rather than Apple's own
+                        // "purgeables": the whole difficulty of this number is
+                        // who does the freeing, and "purgeable" reads as an
+                        // invitation to do it yourself. The official word stays
+                        // in the tooltip, to connect what is shown here with
+                        // what Utilitaire de disque says.
+                        Text("dont \(Format.bytes(volume.purgeableBytes)) réservés par macOS")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovering = $0 }
         }
         .padding(.vertical, 3)
+        .help(tooltip)
+    }
+
+    /// The whole story, for whoever wonders why two numbers disagree. Spelled
+    /// out rather than hinted at: this tooltip is the app's answer to "I
+    /// deleted 50 GB and nothing came back".
+    private var tooltip: String {
+        var lines = ["\(volume.name) — \(Format.bytes(volume.totalBytes))"]
+        guard volume.purgeableBytes > 0 else {
+            lines.append("Libres : \(Format.bytes(volume.availableBytes))")
+            return lines.joined(separator: "\n")
+        }
+        lines.append("Libres immédiatement : \(Format.bytes(volume.availableBytes))")
+        lines.append("Réservés par macOS : \(Format.bytes(volume.purgeableBytes))")
+        lines.append("Disponibles au total : \(Format.bytes(volume.importantBytes))")
+        if volume.opportunisticBytes > 0 {
+            lines.append(
+                "Pour les téléchargements en arrière-plan : "
+                    + Format.bytes(volume.opportunisticBytes)
+            )
+        }
+        lines.append("")
+        lines.append(
+            "macOS appelle cet espace « purgeable » et le récupère de lui-même "
+                + "quand le disque se remplit : snapshots APFS locaux, caches, "
+                + "corbeille, index Spotlight."
+        )
+        return lines.joined(separator: "\n")
     }
 }
 
 private struct CapacityBar: View {
-    let fraction: Double
+    let volume: VolumeInfo
 
     /// Turns amber then red as the disk fills — the one place in the app where
     /// colour carries meaning rather than identity.
@@ -272,7 +362,7 @@ private struct CapacityBar: View {
     /// itself grey for the selection, and a gauge whose "everything is fine"
     /// state is grey says nothing at all.
     private var tint: Color {
-        switch fraction {
+        switch volume.usedFraction {
         case ..<0.75: .blue
         case ..<0.9: .orange
         default: .red
@@ -283,10 +373,23 @@ private struct CapacityBar: View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary)
+                // The purgeable stretch is drawn first, at full length, and the
+                // solidly occupied part laid over it — two capsules laid end to
+                // end would show a seam at every width.
+                Capsule()
+                    .fill(tint.opacity(0.35))
+                    .frame(width: width(
+                        of: volume.usedFraction + volume.purgeableFraction,
+                        in: geometry
+                    ))
                 Capsule()
                     .fill(tint)
-                    .frame(width: geometry.size.width * min(1, max(0, fraction)))
+                    .frame(width: width(of: volume.usedFraction, in: geometry))
             }
         }
+    }
+
+    private func width(of fraction: Double, in geometry: GeometryProxy) -> Double {
+        geometry.size.width * min(1, max(0, fraction))
     }
 }
