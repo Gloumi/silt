@@ -47,6 +47,35 @@ struct AppUninstallerTests {
         #expect(verdict != .certain)
     }
 
+    /// The bug this guard exists for: `com.apple.` read as a publisher made
+    /// every system container a "possible leftover" of any Apple app in
+    /// /Applications — that is how a live Shortcuts container reached the trash.
+    @Test("Apple is not a publisher: system files never match by vendor")
+    func appleIsNotAVendor() {
+        let xcode = AppBundle(
+            path: "/Applications/Xcode.app", name: "Xcode",
+            bundleID: "com.apple.dt.Xcode", bytes: 0
+        )
+        for entry in [
+            "com.apple.WorkflowKit.BackgroundShortcutRunner",
+            "com.apple.finder.plist",
+            "group.com.apple.notes",
+        ] {
+            #expect(
+                AppUninstaller.classify(entry: entry, app: xcode) == nil,
+                "« \(entry) » n'est pas un résidu de Xcode"
+            )
+        }
+        // Xcode's own leftovers still match, on the full identifier.
+        #expect(
+            AppUninstaller.classify(entry: "com.apple.dt.Xcode.plist", app: xcode)
+                == .certain
+        )
+        #expect(
+            AppUninstaller.classify(entry: "Xcode", app: xcode) == .probable
+        )
+    }
+
     @Test("Unrelated files are not matched at all")
     func unrelatedIsIgnored() {
         for entry in ["com.apple.finder.plist", "Slack", "Xcode", "logs"] {

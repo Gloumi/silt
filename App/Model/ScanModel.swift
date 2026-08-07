@@ -1445,6 +1445,14 @@ final class ScanModel {
                 "\(report.trashed.count) élément(s) à la corbeille — \(bytes) libérés en la vidant."
             )
         }
+        // The Finder route loses the Finder's own "Remettre" often enough that
+        // saying nothing would leave the user believing in an undo that is not
+        // there. "Annuler" here still works — until this banner is dismissed.
+        if !report.finderAssisted.isEmpty {
+            parts.append(
+                "\(report.finderAssisted.count) élément(s) sont passés par le Finder : « Remettre » peut y être indisponible, « Annuler » reste fiable tant que ce message est affiché."
+            )
+        }
         if !report.refused.isEmpty {
             parts.append("\(report.refused.count) protégé(s).")
         }

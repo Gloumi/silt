@@ -62,6 +62,28 @@ public enum DenyList {
         path == prefix || path.hasPrefix(prefix + "/")
     }
 
+    /// A sandbox container belonging to macOS itself rather than to anything the
+    /// user installed.
+    ///
+    /// Refused outright, where the enclosing `Library/Containers` only warns.
+    /// Two reasons. These are not the user's to remove — the system owns them
+    /// and recreates them at will — and macOS guards them well enough that
+    /// trashing one tends to strand it: the Finder can afterwards neither empty
+    /// it nor put it back, and prising it out of `~/.Trash` takes a terminal
+    /// with Full Disk Access.
+    private static func isSystemContainer(_ path: String) -> Bool {
+        let lowered = path.lowercased()
+        for folder in ["Library/Containers", "Library/Group Containers"] {
+            let root = homeRelative(folder).lowercased() + "/"
+            // Group containers wear a `group.` prefix before the identifier.
+            for vendor in ["com.apple.", "group.com.apple."]
+            where lowered.hasPrefix(root + vendor) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Rewrites the short forms of the `/private` symlinks to their real
     /// targets, so a single spelling has to be listed above.
     ///
@@ -130,6 +152,10 @@ public enum DenyList {
         }
         for rule in forbiddenRoots where isUnder(path, rule.path) {
             return .forbidden(rule.reason)
+        }
+
+        if isSystemContainer(path) {
+            return .forbidden("Conteneur système de macOS.")
         }
 
         for suffix in [

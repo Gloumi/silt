@@ -214,7 +214,16 @@ public enum AppUninstaller {
     }
 
     /// `com.spotify.client` → `com.spotify.`, the publisher's namespace.
+    ///
+    /// Nil for Apple. `com.apple.` is not one publisher's corner of the library,
+    /// it is the operating system: read as a vendor it turns every system
+    /// container, preference file and launch agent into a "possible leftover" of
+    /// whichever Apple app happens to sit in `/Applications` — hundreds of them,
+    /// listed beside genuine debris and one tick away from the trash. Apple's
+    /// real leftovers are not lost by this: they match on the full bundle
+    /// identifier, one tier up.
     private static func vendorPrefix(of bundleID: String) -> String? {
+        guard !bundleID.hasPrefix("com.apple.") else { return nil }
         let parts = bundleID.split(separator: ".")
         guard parts.count >= 3 else { return nil }
         return parts.prefix(2).joined(separator: ".") + "."

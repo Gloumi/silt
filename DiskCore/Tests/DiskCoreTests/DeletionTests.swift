@@ -58,6 +58,28 @@ struct DenyListTests {
         }
     }
 
+    /// Trashing one of these strands it: the Finder can then neither empty it
+    /// nor put it back. Refused outright, where the enclosing folder only warns.
+    @Test("macOS's own sandbox containers are refused")
+    func systemContainersForbidden() {
+        let home = NSHomeDirectory()
+        for path in [
+            home + "/Library/Containers/com.apple.WorkflowKit.BackgroundShortcutRunner",
+            home + "/Library/Containers/com.apple.Safari/Data",
+            home + "/Library/Group Containers/group.com.apple.CoreSpeech",
+        ] {
+            #expect(DenyList.verdict(for: path).isForbidden, "\(path) devrait être refusé")
+        }
+        // Third-party containers keep the milder verdict: they are the user's.
+        if case .caution = DenyList.verdict(
+            for: home + "/Library/Containers/com.docker.docker/Data"
+        ) {} else {
+            Issue.record("un conteneur tiers devrait avertir, pas refuser")
+        }
+        // The folder itself is not a container, and stays a warning.
+        #expect(!DenyList.verdict(for: home + "/Library/Containers").isForbidden)
+    }
+
     @Test("/private/var/folders is protected except the user's own cache and temp")
     func varFoldersHardened() throws {
         for path in [

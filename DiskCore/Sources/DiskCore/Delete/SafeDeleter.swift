@@ -10,6 +10,11 @@ public struct TrashedItem: Sendable, Identifiable {
     /// item could only be removed outright.
     public let trashPath: String?
     public let bytes: Int64
+    /// True when a plain rename was refused and the Finder had to be asked
+    /// instead. Worth telling the user about: on that route the Finder's own
+    /// "Remettre" can come back greyed out, which leaves the in-app undo — good
+    /// only until the banner is dismissed — as the one way back.
+    public let viaFinder: Bool
 
     /// The path, not the node: a path is unique whether or not the item was in
     /// the tree, and two out-of-tree items would otherwise share an identity.
@@ -39,6 +44,8 @@ public struct DeletionReport: Sendable {
     public var refused: [DeletionFailure] = []
 
     public var reclaimedBytes: Int64 { trashed.reduce(0) { $0 + $1.bytes } }
+    /// Those the Finder had to trash on our behalf — see `TrashedItem.viaFinder`.
+    public var finderAssisted: [TrashedItem] { trashed.filter(\.viaFinder) }
     public var isEmpty: Bool {
         trashed.isEmpty && failures.isEmpty && refused.isEmpty
     }
@@ -97,7 +104,8 @@ public enum SafeDeleter {
                     node: request.node,
                     originalPath: request.path,
                     trashPath: (resulting as URL?)?.path,
-                    bytes: request.bytes
+                    bytes: request.bytes,
+                    viaFinder: false
                 ))
             } catch {
                 let permission = isPermissionError(error)
@@ -122,7 +130,8 @@ public enum SafeDeleter {
                     node: request.node,
                     originalPath: request.path,
                     trashPath: trashPath,
-                    bytes: request.bytes
+                    bytes: request.bytes,
+                    viaFinder: true
                 ))
             }
         }
