@@ -355,6 +355,20 @@ final class ScanModel {
     /// Full Disk Access explainer, shown once and reachable from the Help menu
     /// and from the warning in the status bar.
     var showsWelcome = !Preferences.shared.hasSeenWelcome
+    /// Whether the inspector column is open. Held here rather than in the view
+    /// so the menu command can reach it: its keyboard shortcut has to keep
+    /// working when the column — and the toolbar button that lives in it — is
+    /// folded away, which is exactly when you need it most.
+    ///
+    /// Open by default, and never opened or closed by the app afterwards. A
+    /// column that comes and goes on its own was tried: it opened on a landed
+    /// scan and on the Applications view, and had to stay shut on Cleanup,
+    /// Reboot and Snapshots — a rule plus its exceptions, for a window whose
+    /// behaviour nobody could predict. It also opened on "Aucune sélection" in
+    /// Applications, which is the very emptiness it was meant to spare us.
+    /// What the open column buys, on top of that, is discovery: showing in the
+    /// Finder, uninstalling, what an app leaves behind all live in there.
+    var showsInspector = true
 
     /// Set while the confirmation sheet is up.
     var deletionPlan: DeletionPlan? {

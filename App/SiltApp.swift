@@ -17,6 +17,9 @@ struct SiltApp: App {
 
         Settings { SettingsView() }
         .commands {
+            // Hiding the sidebar is a system gesture; this is the one line that
+            // puts it in the Présentation menu, under ⌃⌘S, localised by SwiftUI.
+            SidebarCommands()
             CommandGroup(replacing: .newItem) {
                 Button("Analyser un dossier…") { chooseFolder() }
                     .keyboardShortcut("o")
@@ -35,6 +38,23 @@ struct SiltApp: App {
                     .disabled(!model.canSearch)
             }
             CommandGroup(after: .toolbar) {
+                // Written out rather than taken from `InspectorCommands()`,
+                // which files an item titled "Inspecteur Show" — half
+                // translated — under ⌃⌘I, and leaves it disabled. The shortcut
+                // has to live in the menu and not on the toolbar button: the
+                // button belongs to the inspector column now.
+                //
+                // Plain ⌘I, the Finder's "Lire les informations", because that
+                // is what the column holds: the details of whatever is
+                // selected. Preview spells its own inspector the same way. The
+                // shortcut is free to take — nothing else here describes a
+                // selection.
+                Toggle("Inspecteur", isOn: Binding(
+                    get: { model.showsInspector },
+                    set: { model.showsInspector = $0 }
+                ))
+                .keyboardShortcut("i", modifiers: .command)
+                Divider()
                 // ⌘R is already the inspector's "Afficher dans le Finder".
                 Button("Actualiser l'analyse") { model.rescan() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -94,7 +114,6 @@ struct SiltApp: App {
 
 struct ContentView: View {
     let model: ScanModel
-    @State private var showsInspector = true
     /// Owned here rather than by ScanModel: the reboot measurement has
     /// nothing to do with the scan lifecycle and survives all its resets.
     @State private var reboot = RebootModel()
@@ -138,9 +157,22 @@ struct ContentView: View {
         } detail: {
             BrowserView(model: model, reboot: reboot, apps: apps, snapshots: snapshots)
         }
-        .inspector(isPresented: $showsInspector) {
+        .inspector(isPresented: Bindable(model).showsInspector) {
             InspectorView(model: model, apps: apps)
                 .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
+                // Declared on the inspector's own content rather than on the
+                // split view, so the button sits over the inspector column the
+                // way the sidebar's toggle sits over the sidebar — and slides
+                // back into the window's bar when the column folds away.
+                .toolbar {
+                    ToolbarItem {
+                        Button {
+                            model.showsInspector.toggle()
+                        } label: {
+                            Label("Inspecteur", systemImage: "sidebar.trailing")
+                        }
+                    }
+                }
         }
         .sheet(isPresented: Bindable(model).showsWelcome) {
             WelcomeSheet(
@@ -181,14 +213,6 @@ struct ContentView: View {
                     Label("Remonter", systemImage: "chevron.up")
                 }
                 .disabled(model.trail.count <= 1)
-            }
-            ToolbarItem {
-                Button {
-                    showsInspector.toggle()
-                } label: {
-                    Label("Inspecteur", systemImage: "sidebar.trailing")
-                }
-                .keyboardShortcut("i", modifiers: [.command, .option])
             }
             ToolbarItem {
                 Picker("Taille", selection: Binding(
