@@ -31,6 +31,10 @@ struct BrowserView: View {
                 // The one destination no scan could ever feed: snapshots are
                 // invisible to a walk of the tree by design.
                 SnapshotsView(model: model, snapshots: snapshots)
+            } else if model.presentation == .trash {
+                // Reads nothing but its own ledger and the trash folders it
+                // names, so like Snapshots it stands entirely outside the scan.
+                TrashView(model: model)
             } else if model.presentation == .apps {
                 // Also a destination, and the one that owes the scan the least:
                 // it lists /Applications itself, so it works with no volume
@@ -86,7 +90,7 @@ struct BrowserView: View {
                         LargeFilesView(model: model, store: store)
                     // The tools never reach here — the body branches to their
                     // views before this — but the switch must cover them.
-                    case .list, .apps, .cleanup, .reboot, .snapshots:
+                    case .list, .apps, .cleanup, .reboot, .snapshots, .trash:
                         entryList(store: store, parentSize: parentSize)
                     }
                 }

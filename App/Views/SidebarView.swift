@@ -126,6 +126,20 @@ struct SidebarView: View {
                     Label("Snapshots", systemImage: "clock.arrow.circlepath")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                row(isSelected: model.showsTrash, action: model.showTrash) {
+                    HStack(spacing: 6) {
+                        Label("Corbeille", systemImage: "trash")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // The count, not the size: what matters here is whether
+                        // anything is still waiting to be put back.
+                        if !model.restorable.isEmpty {
+                            Text("\(model.restorable.count)")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
         }
         .listStyle(.sidebar)

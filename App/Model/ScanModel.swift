@@ -19,6 +19,7 @@ final class ScanModel {
 
     enum Presentation: String, CaseIterable, Identifiable {
         case sunburst, treemap, list, largeFiles, apps, cleanup, reboot, snapshots
+        case trash
         var id: String { rawValue }
 
         /// The four ways of looking at the tree. Applications, Cleanup and
@@ -38,7 +39,9 @@ final class ScanModel {
         /// The destinations that are not a view of the tree. Each shows its own
         /// findings, so the inspector must not go on describing whatever folder
         /// was selected before arriving here.
-        static let tools: [Presentation] = [.apps, .cleanup, .reboot, .snapshots]
+        static let tools: [Presentation] = [
+            .apps, .cleanup, .reboot, .snapshots, .trash,
+        ]
 
         var label: String {
             switch self {
@@ -50,6 +53,7 @@ final class ScanModel {
             case .cleanup: "Caches et résidus"
             case .reboot: "Redémarrage"
             case .snapshots: "Snapshots"
+            case .trash: "Corbeille"
             }
         }
         var symbol: String {
@@ -62,6 +66,7 @@ final class ScanModel {
             case .cleanup: "wand.and.sparkles"
             case .reboot: "restart.circle"
             case .snapshots: "clock.arrow.circlepath"
+            case .trash: "trash"
             }
         }
 
@@ -76,6 +81,7 @@ final class ScanModel {
             case .cleanup: "Caches et résidus — ce que vos outils régénèrent tout seuls"
             case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
             case .snapshots: "Snapshots — copies APFS locales qui retiennent de l'espace"
+            case .trash: "Corbeille — ce que Silt y a mis, et qu'il peut remettre en place"
             }
         }
     }
@@ -382,7 +388,14 @@ final class ScanModel {
     }
     var deletionPlanBox: PlanBox?
     /// Last successful deletion, kept so it can be undone.
+    ///
+    /// The banner's undo, and only that: it dies with the launch. Anything that
+    /// has to outlive the banner belongs in `restorable` below.
     private(set) var lastDeletion: DeletionReport?
+    /// Everything this app has trashed that is still in a trash folder, newest
+    /// first — the Corbeille tool's contents, and the durable route back once
+    /// the banner is gone.
+    private(set) var restorable: [TrashLedgerEntry] = []
     /// Bumped after every confirmed deletion and every undo, so tools that
     /// measure the disk outside the tree know to look again.
     private(set) var deletionEpoch = 0
@@ -933,6 +946,7 @@ final class ScanModel {
         }
         undoSizes = sizes
         lastDeletion = report.trashed.isEmpty ? nil : report
+        remember(report.trashed)
         present(report)
         selection = []
         junkSelection = []
@@ -960,6 +974,12 @@ final class ScanModel {
         lastDeletion = nil
         undoSizes = [:]
         needsAppManagement = false
+        // What went back is no longer in the trash, so it leaves the ledger too
+        // — otherwise the Corbeille tool would offer to restore it a second
+        // time, onto a path that is now occupied.
+        forget(trashPaths: items
+            .filter { !failedPaths.contains($0.originalPath) }
+            .compactMap(\.trashPath))
         deletionMessage = failures.isEmpty
             ? "Restauration effectuée."
             : "\(failures.count) élément(s) n'ont pas pu être restaurés."
@@ -998,11 +1018,98 @@ final class ScanModel {
             // would offer a restoration that cannot happen.
             lastDeletion = nil
             undoSizes = [:]
-            deletionMessage = "Corbeille vidée."
+            // Verified against the trash rather than cleared outright. The
+            // Finder reports success while leaving behind what it could not
+            // remove — a stranded system container is the case in point — and
+            // that item is the one whose record matters most. Retiring the
+            // ledger wholesale would erase it precisely then.
+            await refreshRestorable()
+            deletionMessage = restorable.isEmpty
+                ? "Corbeille vidée."
+                : "Corbeille vidée — \(restorable.count) élément(s) ont résisté et restent restaurables ici."
             deletionEpoch += 1
         } else {
-            deletionMessage = "Le Finder n'a pas pu vider la corbeille."
+            // The Finder balks at items it cannot remove — a stranded system
+            // container is the usual one. The ledger is re-read rather than
+            // cleared: what survived is still restorable, and saying so is the
+            // whole point of the tool.
+            await refreshRestorable()
+            deletionMessage = restorable.isEmpty
+                ? "Le Finder n'a pas pu vider la corbeille."
+                : "Le Finder n'a pas pu vider la corbeille — \(restorable.count) élément(s) y sont encore, restaurables depuis « Corbeille »."
         }
+    }
+
+    // MARK: - The durable trash ledger
+
+    /// Re-reads the ledger and retires whatever has left the trash since.
+    ///
+    /// Called when the Corbeille tool appears and after every deletion epoch,
+    /// rather than on a timer: the trash changes under us — the user empties it
+    /// in the Finder — but not so often that polling would earn its keep.
+    func refreshRestorable() async {
+        restorable = await Task.detached {
+            let survivors = TrashLedger.survivors(of: TrashLedger.load())
+            TrashLedger.save(survivors)
+            return survivors
+        }.value
+    }
+
+    /// Puts back a selection from the Corbeille tool.
+    ///
+    /// Unlike the banner's undo this cannot repair the tree's roll-up — the
+    /// nodes these came from belong to a scan that may no longer exist — so the
+    /// figures are refreshed and the next scan tells the truth. Restoring the
+    /// file itself is identical either way.
+    func restoreFromTrash(_ entries: [TrashLedgerEntry]) async {
+        guard !entries.isEmpty else { return }
+        let items = entries.map(\.item)
+        let failures = await Task.detached { SafeDeleter.restore(items) }.value
+
+        let failedPaths = Set(failures.map(\.path))
+        forget(trashPaths: entries
+            .filter { !failedPaths.contains($0.originalPath) }
+            .map(\.trashPath))
+
+        let restored = entries.count - failures.count
+        var parts: [String] = []
+        if restored > 0 { parts.append("\(restored) élément(s) restauré(s).") }
+        if let failure = failures.first {
+            let name = (failure.path as NSString).lastPathComponent
+            parts.append(
+                failures.count == 1
+                    ? "Échec : \(name) — \(failure.reason)"
+                    : "\(failures.count) échecs, dont \(name) — \(failure.reason)"
+            )
+        }
+        deletionMessage = parts.joined(separator: " ")
+        needsAppManagement = false
+        deletionEpoch += 1
+        treeDidChange()
+        refreshJunkIfShown()
+    }
+
+    /// Records what just went to the trash, so it survives the banner.
+    private func remember(_ items: [TrashedItem]) {
+        guard !items.isEmpty else { return }
+        let entries = TrashLedger.record(
+            items, at: Date(), into: TrashLedger.load()
+        )
+        TrashLedger.save(entries)
+        restorable = entries
+    }
+
+    /// Retires trash paths whose items went back where they came from.
+    ///
+    /// Only ever the successes: an item whose restore failed is still sitting
+    /// in the trash, and dropping it would strand it exactly as before.
+    private func forget(trashPaths: [String]) {
+        guard !trashPaths.isEmpty else { return }
+        let kept = TrashLedger.forget(
+            trashPaths: trashPaths, from: TrashLedger.load()
+        )
+        TrashLedger.save(kept)
+        restorable = kept
     }
 
     /// Space opens a preview of the inspected item, and closes it again.
@@ -1104,6 +1211,7 @@ final class ScanModel {
         }
         undoSizes = sizes
         lastDeletion = report.trashed.isEmpty ? nil : report
+        remember(report.trashed)
         present(report)
         selection = []
         deletionEpoch += 1
@@ -1161,6 +1269,10 @@ final class ScanModel {
     }
 
     var showsSnapshots: Bool { presentation == .snapshots }
+
+    func showTrash() { presentation = .trash }
+
+    var showsTrash: Bool { presentation == .trash }
 
     /// The mount point the Snapshots view should scroll to on arrival. Set by
     /// the sidebar, cleared by the view once it has honoured it — the model

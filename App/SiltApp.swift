@@ -12,6 +12,10 @@ struct SiltApp: App {
                 // NSApp exists by the time a window appears, which it does not
                 // when Preferences is first constructed.
                 .task { Preferences.shared.applyAppearance() }
+                // Read once at launch so the sidebar can say straight away that
+                // something is still waiting to be put back — the tool itself
+                // may never be opened, and that count is the only hint.
+                .task { await model.refreshRestorable() }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
 
