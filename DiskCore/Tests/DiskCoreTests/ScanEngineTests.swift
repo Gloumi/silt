@@ -10,6 +10,14 @@ import Testing
 struct Fixture: ~Copyable {
     let root: URL
 
+    /// The instant every backdated timestamp is measured from.
+    ///
+    /// Assertions about dates have to use this rather than reading the clock
+    /// again: between writing a fixture and checking the tree there is a whole
+    /// scan, and under a parallel test run that is seconds, not milliseconds.
+    /// Two moving references cannot be compared to within a second.
+    let created = Date()
+
     init(_ name: String = UUID().uuidString) throws {
         root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("diskcore-tests-\(name)")
@@ -54,7 +62,7 @@ struct Fixture: ~Copyable {
     func setModified(_ relative: String, daysAgo: Double) throws {
         let url = relative.isEmpty ? root : root.appendingPathComponent(relative)
         try FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(-daysAgo * 86_400)],
+            [.modificationDate: created.addingTimeInterval(-daysAgo * 86_400)],
             ofItemAtPath: url.path
         )
     }

@@ -4,11 +4,19 @@ import Testing
 
 @testable import DiskCore
 
-/// Filesystem timestamps have one-second granularity and the tests write real
-/// files, so dates are compared with a little slack rather than for equality.
-private func expectDays(_ seconds: Int32, agoBy days: Double) -> Bool {
-    let expected = Date().timeIntervalSince1970 - days * 86_400
-    return abs(Double(seconds) - expected) < 5
+/// Filesystem timestamps have one-second granularity, so dates are compared
+/// with a little slack rather than for equality.
+///
+/// The slack is small on purpose, and `from` is what lets it stay that way:
+/// measured against the fixture's own instant, the only error left is the
+/// filesystem rounding. Read off `Date()` here instead and the gap would also
+/// carry however long the scan took — which failed this suite roughly every
+/// other run, since the tests run in parallel and a scan is seconds of work.
+private func expectDays(
+    _ seconds: Int32, agoBy days: Double, from reference: Date
+) -> Bool {
+    let expected = reference.timeIntervalSince1970 - days * 86_400
+    return abs(Double(seconds) - expected) < 2
 }
 
 @Suite("Modification times")
@@ -44,7 +52,7 @@ struct ModificationTimeTests {
 
         let store = (await ScanEngine.scan(root: fixture.path)).store
         let file = try #require(store.child(of: 0, named: "report.bin"))
-        #expect(expectDays(store.modTime[Int(file)], agoBy: 400))
+        #expect(expectDays(store.modTime[Int(file)], agoBy: 400, from: fixture.created))
     }
 
     @Test("A folder reports its newest descendant, not its own mtime")
@@ -64,8 +72,8 @@ struct ModificationTimeTests {
         let deep = try #require(store.child(of: branch, named: "deep"))
 
         // Two levels up, so this also covers the reverse pass being transitive.
-        #expect(expectDays(store.modTime[Int(deep)], agoBy: 2))
-        #expect(expectDays(store.modTime[Int(branch)], agoBy: 2))
+        #expect(expectDays(store.modTime[Int(deep)], agoBy: 2, from: fixture.created))
+        #expect(expectDays(store.modTime[Int(branch)], agoBy: 2, from: fixture.created))
     }
 
     @Test("An old folder stays old when nothing inside it is newer")
@@ -78,7 +86,7 @@ struct ModificationTimeTests {
         let store = (await ScanEngine.scan(root: fixture.path)).store
         let attic = try #require(store.child(of: 0, named: "attic"))
         // Its own mtime wins here: 500 days is the newest thing about it.
-        #expect(expectDays(store.modTime[Int(attic)], agoBy: 500))
+        #expect(expectDays(store.modTime[Int(attic)], agoBy: 500, from: fixture.created))
     }
 
     @Test("A collapsed directory carries the newest date it hides")
@@ -99,7 +107,7 @@ struct ModificationTimeTests {
         // Nothing inside got a node, so `rollUp` cannot help: this can only
         // work if `aggregateSubtree` tracked the date on its own way down.
         #expect(store.childCount[Int(modules)] == 0)
-        #expect(expectDays(store.modTime[Int(modules)], agoBy: 3))
+        #expect(expectDays(store.modTime[Int(modules)], agoBy: 3, from: fixture.created))
     }
 
     @Test("A bundle carries the newest date inside it too")
@@ -114,7 +122,7 @@ struct ModificationTimeTests {
         let store = (await ScanEngine.scan(root: fixture.path)).store
         let app = try #require(store.child(of: 0, named: "Thing.app"))
         #expect(store.flags[Int(app)].contains(.package))
-        #expect(expectDays(store.modTime[Int(app)], agoBy: 5))
+        #expect(expectDays(store.modTime[Int(app)], agoBy: 5, from: fixture.created))
     }
 
     @Test("Roll-up maxes dates while it sums sizes")
