@@ -1070,6 +1070,10 @@ final class ScanModel {
         forget(trashPaths: entries
             .filter { !failedPaths.contains($0.originalPath) }
             .map(\.trashPath))
+        // A restore can fail because the item is no longer there to restore —
+        // the trash was emptied since. Re-probing retires those too, instead of
+        // leaving an entry that will fail the same way for ever.
+        await refreshRestorable()
 
         let restored = entries.count - failures.count
         var parts: [String] = []

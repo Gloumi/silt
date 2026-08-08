@@ -1,4 +1,15 @@
+import Darwin
 import Foundation
+
+/// What could be established about one item still being in the trash.
+///
+/// Three cases, not two, because the trash is TCC-protected and "I am not
+/// allowed to look" must never be read as "it is gone".
+public enum TrashPresence: Sendable, Equatable {
+    case present
+    case absent
+    case unknown
+}
 
 /// One thing this app moved to the trash and can still put back.
 ///
@@ -91,37 +102,36 @@ public enum TrashLedger {
         return entries.filter { !gone.contains($0.trashPath) }
     }
 
-    /// Those entries still sitting in a trash folder.
+    /// Whether one item is still in the trash.
     ///
-    /// The subtle part is what happens when a trash folder cannot be listed.
-    /// `~/.Trash` is TCC-protected: with no Full Disk Access every probe comes
-    /// back "absent", and a prune that believed it would erase the ledger — the
-    /// one record that makes these items restorable — precisely in the case
-    /// where the user needs it. So a folder that refuses to list leaves its
-    /// entries alone rather than presuming them gone, and only a folder we
-    /// genuinely read can retire anything.
-    public static func survivors(
-        of entries: [TrashLedgerEntry]
-    ) -> [TrashLedgerEntry] {
-        let manager = FileManager()
-        // One listing per trash folder, not one probe per entry: a home trash
-        // with a thousand items would otherwise be walked a thousand times.
-        // Volumes have their own — `/Volumes/X/.Trashes/501` — so this is
-        // keyed, not assumed to be a single place.
-        var listings: [String: Set<String>] = [:]
-        for folder in Set(entries.map { ($0.trashPath as NSString).deletingLastPathComponent }) {
-            guard let names = try? manager.contentsOfDirectory(atPath: folder)
-            else { continue }
-            listings[folder] = Set(names)
-        }
+    /// `lstat` on the item, deliberately, rather than listing its folder. The
+    /// two are not equivalent under TCC: reading `~/.Trash` needs Full Disk
+    /// Access and is refused without it, while stat-ing a path *inside* it is
+    /// allowed and answers ENOENT for something genuinely gone. Asking the
+    /// narrower question is what lets an app with no special privilege still
+    /// tell "emptied" from "not allowed to look" — and `FileManager`'s
+    /// `fileExists` cannot, since it collapses both into false.
+    ///
+    /// No `stat`: a symlink left in the trash is still an item to put back,
+    /// and following it to a missing target would report it gone.
+    public static func presence(of path: String) -> TrashPresence {
+        var info = stat()
+        guard lstat(path, &info) != 0 else { return .present }
+        return errno == ENOENT || errno == ENOTDIR ? .absent : .unknown
+    }
 
-        return entries.filter { entry in
-            let path = entry.trashPath as NSString
-            guard let names = listings[path.deletingLastPathComponent] else {
-                return true // Unreadable: keep, see above.
-            }
-            return names.contains(path.lastPathComponent)
-        }
+    /// Those entries still in the trash, as far as can be established.
+    ///
+    /// Only what is known to be gone is retired. An entry we were not allowed
+    /// to look at stays: erasing the one record that makes an item restorable,
+    /// on the strength of a permission error, would lose it exactly when it is
+    /// needed. The probe is injectable so that this case can be tested without
+    /// a machine-specific unreadable path.
+    public static func survivors(
+        of entries: [TrashLedgerEntry],
+        probe: (String) -> TrashPresence = presence(of:)
+    ) -> [TrashLedgerEntry] {
+        entries.filter { probe($0.trashPath) != .absent }
     }
 
     // MARK: - Storage

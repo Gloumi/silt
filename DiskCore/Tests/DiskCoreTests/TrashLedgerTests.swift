@@ -88,35 +88,45 @@ struct TrashLedgerTests {
         #expect(TrashLedger.survivors(of: ledger).map(\.name) == ["still-there.bin"])
     }
 
-    /// The one that matters most. `~/.Trash` is unreadable without Full Disk
-    /// Access, and a prune that read that as "everything is gone" would wipe the
-    /// only record of what can still be put back — in the exact case where the
-    /// user needs it. An unlistable folder must retire nothing.
-    @Test("A trash folder that cannot be listed retires nothing")
-    func unreadableTrashKeepsEverything() {
-        let ledger = [
-            entry("/a/x", at: "/nowhere-at-all/x"),
-            entry("/a/y", at: "/nowhere-at-all/y"),
-        ]
-        #expect(TrashLedger.survivors(of: ledger).count == 2)
+    /// The one that matters most. `~/.Trash` cannot be *listed* without Full
+    /// Disk Access, and a prune that read a permission error as "everything is
+    /// gone" would wipe the only record of what can still be put back — in the
+    /// exact case where the user needs it.
+    @Test("An item we are not allowed to look at is kept")
+    func unknownPresenceKeepsEverything() {
+        let ledger = [entry("/a/x", at: "/T/x"), entry("/a/y", at: "/T/y")]
+        let kept = TrashLedger.survivors(of: ledger) { _ in .unknown }
+        #expect(kept.count == 2)
     }
 
-    /// Volumes keep their own trash, so one unreadable folder must not blind
-    /// the ledger to a readable one — nor the other way round.
-    @Test("Each trash folder is judged on its own")
-    func foldersAreIndependent() throws {
-        let fixture = try Fixture()
-        try fixture.file("kept.bin", bytes: 10)
-
+    @Test("Only what is known to be gone is retired")
+    func retiresOnlyTheAbsent() {
         let ledger = [
-            entry("/a/kept.bin", at: fixture.path + "/kept.bin"),
-            entry("/a/emptied.bin", at: fixture.path + "/emptied.bin"),
-            entry("/b/unknown.bin", at: "/nowhere-at-all/unknown.bin"),
+            entry("/a/here", at: "/T/here"),
+            entry("/a/gone", at: "/T/gone"),
+            entry("/a/hidden", at: "/T/hidden"),
         ]
-        #expect(
-            Set(TrashLedger.survivors(of: ledger).map(\.name))
-                == ["kept.bin", "unknown.bin"]
-        )
+        let kept = TrashLedger.survivors(of: ledger) { path in
+            switch path {
+            case "/T/here": .present
+            case "/T/gone": .absent
+            default: .unknown
+            }
+        }
+        #expect(Set(kept.map(\.name)) == ["here", "hidden"])
+    }
+
+    /// `lstat`, not `fileExists`: the latter collapses "denied" into false, and
+    /// that difference is the whole guard above.
+    @Test("Presence tells a missing item from a real one")
+    func presenceReadsTheFilesystem() throws {
+        let fixture = try Fixture()
+        try fixture.file("there.bin", bytes: 10)
+
+        #expect(TrashLedger.presence(of: fixture.path + "/there.bin") == .present)
+        #expect(TrashLedger.presence(of: fixture.path + "/not-there.bin") == .absent)
+        // A directory is an item too — emptying the trash takes whole folders.
+        #expect(TrashLedger.presence(of: fixture.path) == .present)
     }
 
     @Test("An entry restores as a node-less trashed item")
