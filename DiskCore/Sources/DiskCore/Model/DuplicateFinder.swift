@@ -43,7 +43,8 @@ public enum DuplicateFinder {
     /// scan saw hard links to the same inode.
     public struct Storage: Sendable {
         public var fileID: FileID
-        /// Nodes sharing this inode, newest modification first.
+        /// Nodes sharing this inode, in `keeperRank` order — newest first, ties
+        /// broken by depth then path.
         public var nodes: [Int32]
         /// `st_nlink` at hash time. `nodes.count < linkCount` means links
         /// exist outside the scanned subtree: deleting every path listed here
@@ -60,7 +61,7 @@ public enum DuplicateFinder {
         /// the prefix). Kept for tests and debugging, not shown to the user.
         public var digest: [UInt8]
         public var logicalSize: Int64
-        /// Sorted newest first, so "keep the most recent" is index zero.
+        /// Sorted by `keeperRank`, so "keep the most recent" is index zero.
         public var storages: [Storage]
         /// Upper bound on what deleting all copies but one would free. A
         /// storage with links outside the subtree contributes nothing — its
@@ -462,13 +463,22 @@ public enum DuplicateFinder {
             Storage(
                 fileID: draft.fileID,
                 nodes: draft.nodes.sorted {
-                    store.modTime[Int($0)] > store.modTime[Int($1)]
+                    keeperRank(of: $0, in: store) < keeperRank(of: $1, in: store)
                 },
                 linkCount: draft.linkCount,
                 allocated: draft.allocated
             )
         }
-        storages.sort { newestTime($0, in: store) > newestTime($1, in: store) }
+        // The first node of each storage is already its own best, so ranking
+        // the storages by it is enough.
+        storages.sort { a, b in
+            switch (a.nodes.first, b.nodes.first) {
+            case let (first?, second?):
+                keeperRank(of: first, in: store) < keeperRank(of: second, in: store)
+            default:
+                false
+            }
+        }
         return Group(
             digest: digest,
             logicalSize: drafts.first?.size ?? 0,
@@ -495,7 +505,22 @@ public enum DuplicateFinder {
         return inScope.reduce(Int64(0)) { $0 + $1.allocated }
     }
 
-    private static func newestTime(_ storage: Storage, in store: NodeStore) -> Int32 {
-        storage.nodes.map { store.modTime[Int($0)] }.max() ?? 0
+    /// Which copy is the obvious one to keep: newest first, then the path
+    /// nearest the root, then alphabetical.
+    ///
+    /// A date alone is not an order. `cp -p` gives two copies the very same
+    /// second, and a directory's date after `rollUp` is the newest anywhere in
+    /// its subtree, so two copies of a folder are routinely stamped
+    /// identically. The winner was then whichever worker happened to reach the
+    /// file first, and « Conservée » moved between two runs on a disk nothing
+    /// had touched. Depth and path settle it the same way every time.
+    ///
+    /// Shared with the folder pass, which ranks folder copies by the same rule.
+    static func keeperRank(
+        of node: Int32, in store: NodeStore
+    ) -> (Int64, Int, String) {
+        // Negated in Int64: a pre-1970 date is a negative Int32 and negating
+        // Int32.min in place would trap.
+        (-Int64(store.modTime[Int(node)]), store.depth(of: node), store.path(of: node))
     }
 }

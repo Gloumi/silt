@@ -236,6 +236,45 @@ public struct NodeStore: Sendable {
         flags[Int(node)].contains(.directory)
     }
 
+    /// How many folders sit between `node` and the scan root.
+    ///
+    /// Used wherever an order has to be stable without being arbitrary: of two
+    /// copies with the same date, the one nearer the root is the one the user
+    /// put there.
+    public func depth(of node: Int32) -> Int {
+        var depth = 0
+        var current = node
+        while true {
+            let next = parent[Int(current)]
+            if next == current { return depth } // root points at itself
+            depth += 1
+            current = next
+        }
+    }
+
+    /// True when the node is in the Trash, or lives under something that is.
+    ///
+    /// `markDeleted` marks only the node it was handed: splicing a whole
+    /// subtree out would cost its size in work on every click, and crediting
+    /// the ancestors back already keeps every total honest. So the flag sits
+    /// at the top of the trashed subtree and everything below it has to climb
+    /// to find out.
+    ///
+    /// Until folder duplicates the only reader that climbed was `SearchMask`,
+    /// which carries deletion downwards in a pass of its own — which is why a
+    /// file inside a trashed folder went on being listed as long as no search
+    /// was running. Answering per node is O(depth), and depth is single digits.
+    public func isEffectivelyDeleted(_ node: Int32) -> Bool {
+        guard node >= 0, Int(node) < count else { return true }
+        var current = node
+        while true {
+            if flags[Int(current)].contains(.deleted) { return true }
+            let next = parent[Int(current)]
+            if next == current { return false }
+            current = next
+        }
+    }
+
     /// Last modification, or the newest one in the subtree for a directory.
     /// Nil when the filesystem gave us no date at all.
     public func modificationDate(of node: Int32) -> Date? {

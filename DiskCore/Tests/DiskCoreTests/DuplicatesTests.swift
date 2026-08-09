@@ -200,6 +200,38 @@ struct DuplicatesTests {
         #expect(result.bytesHashed == 0)
     }
 
+    @Test("Copies stamped with the same date are still ordered the same way")
+    func keeperOrderIsDeterministic() async throws {
+        let fixture = try Fixture()
+        // Three copies of one content, deliberately given the very same mtime —
+        // what `cp -p` does, and what a folder's rolled-up date does to every
+        // folder copy. Without a tie-break the order is whichever worker got
+        // there first, and « Conservée » wanders between two launches.
+        try fixture.file("b-deep/nested/copy.bin", content: pattern(20, count: 300))
+        try fixture.file("a-top.bin", content: pattern(20, count: 300))
+        try fixture.file("z-top.bin", content: pattern(20, count: 300))
+        for path in ["b-deep/nested/copy.bin", "a-top.bin", "z-top.bin"] {
+            try fixture.setModified(path, daysAgo: 3)
+        }
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        let first = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+        let second = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+
+        func order(_ result: DuplicateFinder.Result) -> [String] {
+            (result.groups.first?.storages ?? []).compactMap {
+                $0.nodes.first.map(scan.store.name(of:))
+            }
+        }
+        // Shallowest first, then alphabetical — never the scan order.
+        #expect(order(first) == ["a-top.bin", "z-top.bin", "copy.bin"])
+        #expect(order(first) == order(second))
+    }
+
     @Test("Cancellation returns nil instead of a partial answer")
     func cancellation() async throws {
         let fixture = try Fixture()

@@ -234,6 +234,32 @@ struct DeletionBookkeepingTests {
         }
         #expect(store.totalAlloc[Int(node)] == 0)
     }
+
+    @Test("Everything under a trashed folder counts as trashed too")
+    func deletionReachesDescendants() async throws {
+        let fixture = try Fixture()
+        try fixture.file("gone/deep/inside.bin", bytes: 1_000)
+        try fixture.file("kept/elsewhere.bin", bytes: 1_000)
+
+        let result = await ScanEngine.scan(root: fixture.path)
+        var store = result.store
+        let gone = try #require(store.child(of: 0, named: "gone"))
+        let inside = try #require(
+            store.descendant(of: 0, at: ["gone", "deep", "inside.bin"])
+        )
+        let elsewhere = try #require(
+            store.descendant(of: 0, at: ["kept", "elsewhere.bin"])
+        )
+
+        store.markDeleted(gone)
+        // The flag itself never travels — that is the whole reason the question
+        // has to be asked of the ancestors.
+        #expect(!store.flags[Int(inside)].contains(.deleted))
+        #expect(store.isEffectivelyDeleted(inside))
+        #expect(store.isEffectivelyDeleted(gone))
+        #expect(!store.isEffectivelyDeleted(elsewhere))
+        #expect(!store.isEffectivelyDeleted(0))
+    }
 }
 
 @Suite("Finder trash fallback")

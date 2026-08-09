@@ -1002,8 +1002,7 @@ final class ScanModel {
     var visibleOthersScope: [Int32]? {
         guard let othersScope, let store else { return othersScope }
         return othersScope.filter {
-            !store.flags[Int($0)].contains(.deleted)
-                && (searchMask?.keeps($0) ?? true)
+            !store.isEffectivelyDeleted($0) && (searchMask?.keeps($0) ?? true)
         }
     }
 
@@ -1029,7 +1028,9 @@ final class ScanModel {
                 )
             }
         }
-        selection = selection.filter { !store.flags[Int($0)].contains(.deleted) }
+        // Effectively, not literally: trashing a folder leaves the flag on the
+        // folder alone, and a file selected inside it is just as gone.
+        selection = selection.filter { !store.isEffectivelyDeleted($0) }
     }
 
     // MARK: - Deletion
@@ -1042,9 +1043,23 @@ final class ScanModel {
             requests: [], names: [], totalBytes: 0, cautions: [], refused: []
         )
 
+        // Whatever is already going to the Trash on its own. A request nested
+        // inside one of these is dropped: trashing the folder takes it along,
+        // and the request that follows would then fail on a path that no
+        // longer exists — while its bytes had already been counted twice in
+        // the recap. Reachable by hand (a folder and a file inside it, ticked
+        // together in the tree) and the normal case once a folder duplicate
+        // and a file duplicate under it are both marked.
+        //
+        // `selection.sorted()` is what makes the single pass enough: the store
+        // appends children after their parent, so an ancestor is always seen
+        // before its descendants.
+        var claimed: Set<Int32> = []
+
         for node in selection.sorted() {
             let path = store.path(of: node)
             let name = store.name(of: node)
+            if hasAncestor(of: node, in: claimed, store: store) { continue }
             let verdict = DenyList.verdict(for: path)
             if case .forbidden(let reason) = verdict {
                 plan.refused.append("\(name) — \(reason)")
@@ -1053,6 +1068,10 @@ final class ScanModel {
             if case .caution(let reason) = verdict {
                 plan.cautions.append("\(name) — \(reason)")
             }
+            // Only what is actually enqueued claims its subtree: a folder the
+            // deny list refused is staying put, so the file inside it is still
+            // the user's to delete.
+            claimed.insert(node)
             plan.requests.append(
                 .init(node: node, path: path, bytes: store.totalAlloc[Int(node)])
             )
@@ -1062,6 +1081,20 @@ final class ScanModel {
 
         guard !plan.requests.isEmpty || !plan.refused.isEmpty else { return }
         deletionPlan = plan
+    }
+
+    /// True when one of `node`'s ancestors is in `set` — the node is already
+    /// covered by something else.
+    private func hasAncestor(
+        of node: Int32, in set: Set<Int32>, store: NodeStore
+    ) -> Bool {
+        var current = node
+        while true {
+            let next = store.parent[Int(current)]
+            if next == current { return false } // root points at itself
+            if set.contains(next) { return true }
+            current = next
+        }
     }
 
     /// Builds a plan from paths that were never part of any scanned tree —
@@ -1658,7 +1691,7 @@ final class ScanModel {
             for storage in group.storages {
                 var kept = storage
                 kept.nodes = storage.nodes.filter { node in
-                    !store.flags[Int(node)].contains(.deleted)
+                    !store.isEffectivelyDeleted(node)
                         && (searchMask?.keeps(node) ?? true)
                 }
                 if !kept.nodes.isEmpty { storages.append(kept) }
@@ -2007,8 +2040,7 @@ final class ScanModel {
         guard let store else { return [0] }
         var result: [Int32] = [0]
         for node in candidate.dropFirst() {
-            guard Int(node) < store.count,
-                  !store.flags[Int(node)].contains(.deleted)
+            guard Int(node) < store.count, !store.isEffectivelyDeleted(node)
             else { break }
             result.append(node)
         }
