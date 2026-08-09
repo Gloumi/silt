@@ -43,8 +43,14 @@ public enum FolderSignature {
     /// fingerprint describes what we managed to see, not what is there.
     ///
     /// `.deleted` because a folder half in the Trash is not a folder any more.
+    ///
+    /// `.dataless` because the bytes are not here. Comparing a folder holding
+    /// one would mean downloading it — filling the disk the user asked us to
+    /// empty — and the copy weighs nothing anyway, so deleting it frees
+    /// nothing. Same reasoning as `.hardlinkDuplicate`, same conclusion.
     public static let disqualifying: NodeFlags = [
         .hardlinkDuplicate, .mountPoint, .firmlink, .unreadable, .deleted,
+        .dataless,
     ]
 
     // MARK: - F0

@@ -230,6 +230,16 @@ struct DuplicatesView: View {
                 Text(summaryLine(groups, copies: copies))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // Said out loud rather than silently skipped: without it, a
+                // user whose Documents live in iCloud sees an obvious pair of
+                // duplicates go unreported and concludes the feature is broken.
+                if let evicted = model.duplicates?.datalessCount, evicted > 0 {
+                    Text(evicted == 1
+                         ? "1 élément dans iCloud n'a pas été comparé (il n'occupe rien sur ce disque, le comparer voudrait dire le télécharger)"
+                         : "\(Format.count(evicted)) éléments dans iCloud n'ont pas été comparés (ils n'occupent rien sur ce disque, les comparer voudrait dire les télécharger)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let dropped = model.duplicates?.droppedCount, dropped > 0 {
                     Text(dropped == 1
                          ? "1 élément ignoré (modifié ou illisible depuis l'analyse)"

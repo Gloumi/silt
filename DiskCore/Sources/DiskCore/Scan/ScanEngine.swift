@@ -325,6 +325,7 @@ public enum ScanEngine {
                 if entry.bsdFlags & UF_COMPRESSED_FLAG != 0 {
                     flags.insert(.compressed)
                 }
+                if entry.isDataless { flags.insert(.dataless) }
 
                 worker.pending.append(PendingChild(
                     nameStart: nameStart,

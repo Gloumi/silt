@@ -32,6 +32,7 @@ extension DuplicateFinder {
         var groups: [FolderGroup]
         var bytesHashed: Int64
         var dropped: Int
+        var dataless: Int
     }
 
     /// The three stages, run in order: free structural buckets, a live read of
@@ -51,13 +52,14 @@ extension DuplicateFinder {
             in: store, under: root, minimumSize: minimumSize
         ) else { return nil }
         guard !buckets.isEmpty else {
-            return FolderPass(groups: [], bytesHashed: 0, dropped: 0)
+            return FolderPass(groups: [], bytesHashed: 0, dropped: 0, dataless: 0)
         }
 
         // ---- Live read. One manifest object, so a candidate nested inside
         // another candidate re-enumerates nothing.
         let manifest = FolderManifest()
         var dropped = 0
+        var dataless = 0
         var sites: [[Site]] = []
         var lastReport = ContinuousClock.now
         onProgress?(Progress(
@@ -74,6 +76,8 @@ extension DuplicateFinder {
                     // Fail closed, and say so: the note under the headline
                     // already counts what we refused to judge.
                     dropped += 1
+                case .notLocal:
+                    dataless += 1
                 case .cancelled:
                     return nil
                 }
@@ -91,7 +95,9 @@ extension DuplicateFinder {
             if read.count >= 2 { sites.append(read) }
         }
         guard !sites.isEmpty else {
-            return FolderPass(groups: [], bytesHashed: 0, dropped: dropped)
+            return FolderPass(
+                groups: [], bytesHashed: 0, dropped: dropped, dataless: dataless
+            )
         }
 
         // ---- Content, in two rounds. The prefix round rejects most false
@@ -116,7 +122,10 @@ extension DuplicateFinder {
             survivors.append(contentsOf: split.buckets)
         }
         guard !survivors.isEmpty else {
-            return FolderPass(groups: [], bytesHashed: bytesHashed, dropped: dropped)
+            return FolderPass(
+                groups: [], bytesHashed: bytesHashed,
+                dropped: dropped, dataless: dataless
+            )
         }
 
         // Only the files a prefix could not cover. A file no larger than the
@@ -153,7 +162,8 @@ extension DuplicateFinder {
             ($0.reclaimableBytes, $0.bytesEach) > ($1.reclaimableBytes, $1.bytesEach)
         }
         return FolderPass(
-            groups: groups, bytesHashed: bytesHashed, dropped: dropped
+            groups: groups, bytesHashed: bytesHashed,
+            dropped: dropped, dataless: dataless
         )
     }
 

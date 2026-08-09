@@ -94,6 +94,10 @@ public enum DuplicateFinder {
         /// between the scan and the hash — plus folders that failed to verify
         /// for the same reasons. Normal life, not an error.
         public var droppedCount: Int
+        /// Files and folders left alone because their contents are in iCloud
+        /// and not on this disk. Comparing one means downloading it, and it
+        /// occupies nothing here, so deleting it would free nothing anyway.
+        public var datalessCount: Int
     }
 
     public struct Progress: Sendable {
@@ -126,7 +130,7 @@ public enum DuplicateFinder {
         guard !store.isEmpty, root >= 0, Int(root) < store.count else {
             return Result(
                 folderGroups: [], groups: [], candidateCount: 0,
-                bytesHashed: 0, droppedCount: 0
+                bytesHashed: 0, droppedCount: 0, datalessCount: 0
             )
         }
         onProgress?(Progress(
@@ -138,6 +142,7 @@ public enum DuplicateFinder {
         // not be read again by the file pass a second later.
         let cache = DigestCache()
         var dropped = 0
+        var dataless = 0
         var totalHashed: Int64 = 0
 
         // ---- Folders first. They are the coarser answer, and the files they
@@ -150,6 +155,7 @@ public enum DuplicateFinder {
             ) else { return nil }
             folderGroups = folders.groups
             dropped += folders.dropped
+            dataless += folders.dataless
             totalHashed += folders.bytesHashed
             onProgress?(Progress(
                 stage: .collecting, bytesHashed: 0, bytesToHash: 0,
@@ -161,6 +167,7 @@ public enum DuplicateFinder {
         guard let collected = collect(in: store, under: root, options: options)
         else { return nil }
         let candidateCount = collected.buckets.values.reduce(0) { $0 + $1.count }
+        dataless += collected.dataless
 
         // ---- Phase 1: stat, fold hard links, then hash prefixes.
         // Stat also re-checks the size: a file that grew or shrank since the
@@ -253,7 +260,8 @@ public enum DuplicateFinder {
             groups: groups,
             candidateCount: candidateCount,
             bytesHashed: totalHashed,
-            droppedCount: dropped
+            droppedCount: dropped,
+            datalessCount: dataless
         )
     }
 
@@ -266,6 +274,9 @@ public enum DuplicateFinder {
         /// they can never seed a bucket, but they name paths the user can see,
         /// so they must reattach to their inode's storage.
         var hardlinkNodes: [Int32]
+        /// Files left alone because their contents live in iCloud rather than
+        /// on this disk.
+        var dataless: Int
     }
 
     /// One stack walk, the same shape as `LargestFiles.top`: a subtree is not
@@ -277,6 +288,7 @@ public enum DuplicateFinder {
         var sizes: [Int64: [Int32]] = [:]
         var seenOnce: [Int64: Int32] = [:]
         var hardlinkNodes: [Int32] = []
+        var dataless = 0
         var stack: [Int32] = [root]
         var visited = 0
         while let node = stack.popLast() {
@@ -296,6 +308,18 @@ public enum DuplicateFinder {
                 continue
             }
             if flags.contains(.symlink) || flags.contains(.unreadable) { continue }
+            // An evicted iCloud file is a listing entry with nothing behind it.
+            // It occupies zero bytes, so deleting it frees nothing — the same
+            // reason hard links are folded rather than proposed — and the only
+            // way to compare it is to download it, which fills the very disk
+            // the user opened this app to empty.
+            //
+            // The bucket is built on the *logical* size, which for one of these
+            // is the full size of a file that is not there, while `totalAlloc`
+            // is zero and that is what the rest of the app shows. So without
+            // this they were candidates like any other, and hashing them pulled
+            // them down one by one.
+            if flags.contains(.dataless) { dataless += 1; continue }
             let size = store.totalLogical[index]
             guard size >= minimum else { continue }
             // Most sizes are unique; keeping singletons out of the dictionary
@@ -310,7 +334,9 @@ public enum DuplicateFinder {
                 seenOnce[size] = node
             }
         }
-        return Collected(buckets: sizes, hardlinkNodes: hardlinkNodes)
+        return Collected(
+            buckets: sizes, hardlinkNodes: hardlinkNodes, dataless: dataless
+        )
     }
 
     /// Inode of every extra hard link the scan recorded, so the paths can be

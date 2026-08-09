@@ -642,3 +642,72 @@ struct FolderCoverageTests {
         ))
     }
 }
+
+@Suite("Files that are not on this disk")
+struct DatalessTests {
+
+    /// Marks a node the way the scan marks an evicted iCloud file: present in
+    /// the listing, zero bytes on disk, contents elsewhere.
+    private func evict(_ node: Int32, in store: inout NodeStore) {
+        store.markFlag(.dataless, on: node)
+    }
+
+    @Test("An evicted file is never a duplicate candidate")
+    func datalessFilesAreNotCandidates() async throws {
+        let fixture = try Fixture()
+        try fixture.file("here.bin", content: filler(30, count: 4_000))
+        try fixture.file("there.bin", content: filler(30, count: 4_000))
+
+        var options = DuplicateFinder.Options()
+        options.minimumSize = 100
+        options.prefixLength = 16
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        var store = scan.store
+        // Both are in iCloud. The scan still records their *logical* size —
+        // that is the size of the file that is not here — so without the flag
+        // they bucket together like any other pair and get hashed, which
+        // downloads them. On a disk the user opened this app to empty.
+        for name in ["here.bin", "there.bin"] {
+            evict(try #require(store.child(of: 0, named: name)), in: &store)
+        }
+
+        let result = try #require(await DuplicateFinder.find(
+            in: store, under: 0, options: options
+        ))
+        #expect(result.groups.isEmpty)
+        #expect(result.candidateCount == 0)
+        // And not one byte was read, which is the whole point.
+        #expect(result.bytesHashed == 0)
+        #expect(result.datalessCount == 2)
+    }
+
+    @Test("A folder holding an evicted file is never confirmed")
+    func datalessDisqualifiesTheFolder() async throws {
+        let fixture = try Fixture()
+        try fixture.twoCopies("Photos", "Photos copie")
+
+        var options = DuplicateFinder.Options()
+        options.minimumSize = 100
+        options.folderMinimumSize = 100
+        options.prefixLength = 16
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        var store = scan.store
+        evict(
+            try #require(store.descendant(of: 0, at: ["Photos", "raw", "c.bin"])),
+            in: &store
+        )
+
+        let result = try #require(await DuplicateFinder.find(
+            in: store, under: 0, options: options
+        ))
+        let names = Set(result.folderGroups.map {
+            Set($0.folders.map(store.name(of:)))
+        })
+        // Neither `Photos` nor the `raw` that holds it: comparing either means
+        // downloading, and the copy weighs nothing here anyway.
+        #expect(!names.contains(["Photos", "Photos copie"]))
+        #expect(!names.contains(["raw"]))
+    }
+}

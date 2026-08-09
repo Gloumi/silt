@@ -11,6 +11,10 @@ public enum VType: UInt32 {
 
 public let SF_FIRMLINK_FLAG: UInt32 = 0x0080_0000
 public let UF_COMPRESSED_FLAG: UInt32 = 0x0000_0020
+/// The object exists but its contents do not: an iCloud file evicted to free
+/// space, or a directory whose listing has not been materialised. Touching one
+/// downloads it.
+public let SF_DATALESS_FLAG: UInt32 = 0x4000_0000
 public let DIR_MNTSTATUS_MNTPOINT_FLAG: UInt32 = 0x0000_0001
 
 /// One directory entry, as handed to the enumeration callback.
@@ -37,6 +41,7 @@ public struct RawEntry {
     public var isRegularFile: Bool { objType == VType.regular.rawValue }
     public var isSymlink: Bool { objType == VType.symlink.rawValue }
     public var isFirmlink: Bool { bsdFlags & SF_FIRMLINK_FLAG != 0 }
+    public var isDataless: Bool { bsdFlags & SF_DATALESS_FLAG != 0 }
     public var isMountPoint: Bool { mountStatus & DIR_MNTSTATUS_MNTPOINT_FLAG != 0 }
 }
 

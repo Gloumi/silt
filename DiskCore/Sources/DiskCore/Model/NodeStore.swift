@@ -21,6 +21,10 @@ public struct NodeFlags: OptionSet, Sendable {
     /// Moved to the Trash during this session. The node stays in the tree so
     /// the deletion can be undone; views hide it and it contributes nothing.
     public static let deleted = NodeFlags(rawValue: 1 << 9)
+    /// Present in the listing, absent from the disk: an iCloud file evicted to
+    /// free space, or a directory whose contents were never materialised. It
+    /// occupies zero bytes, and reading a single one of them downloads it.
+    public static let dataless = NodeFlags(rawValue: 1 << 10)
 }
 
 /// A whole scanned tree, stored as parallel arrays indexed by node id.

@@ -75,6 +75,10 @@ public final class FolderManifest {
         /// Something could not be resolved. Deliberately not "whatever we
         /// could read": a folder that fails here is dropped, never confirmed.
         case unreadable
+        /// Something inside is in iCloud rather than on this disk. Kept apart
+        /// from `unreadable` because it is not a failure — it is a refusal.
+        /// Reading it would download it, and this app exists to free space.
+        case notLocal
         case cancelled
     }
 
@@ -171,6 +175,11 @@ public final class FolderManifest {
                     failure = .unreadable
                     return
                 }
+                // The listing knows about it, the disk does not hold it. The
+                // scan's own flag catches most of these before we get here, but
+                // only the live read sees a file evicted since — or one inside a
+                // folder the scan never descended into.
+                guard !raw.isDataless else { failure = .notLocal; return }
 
                 var entry = Entry(
                     name: name, kind: .other, size: 0,
