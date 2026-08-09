@@ -2,8 +2,12 @@ import AppKit
 import DiskCore
 import SwiftUI
 
-/// Groups of files with byte-identical content under the current folder,
+/// Folders and files with byte-identical content under the current folder,
 /// resolved one group at a time.
+///
+/// Whole folders come first, and the file copies they cover disappear into
+/// them: a photo library duplicated onto the Desktop is one decision, not two
+/// hundred.
 ///
 /// Master/detail rather than one long list: the left column names the groups
 /// (sorted by what cleaning them returns), the right side spreads the chosen
@@ -80,33 +84,53 @@ struct DuplicatesView: View {
     /// omission. Annuler is load-bearing here, not decoration.
     private var running: some View {
         VStack(spacing: 10) {
-            if let progress = model.duplicatesProgress,
-               progress.stage != .collecting, progress.bytesToHash > 0 {
-                ProgressView(
-                    value: Double(progress.bytesHashed),
-                    total: Double(progress.bytesToHash)
-                )
-                .frame(maxWidth: 280)
-                Text(stageLabel(progress.stage))
-                    .foregroundStyle(.secondary)
-                Text("\(Format.bytes(progress.bytesHashed)) sur \(Format.bytes(progress.bytesToHash)) · \(Format.count(progress.filesHashed)) fichiers sur \(Format.count(progress.filesToHash))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            } else {
-                ProgressView()
-                Text("Recherche des candidats…")
-                    .foregroundStyle(.secondary)
-            }
+            progressBody(model.duplicatesProgress)
             Button("Annuler") { model.cancelDuplicates() }
                 .keyboardShortcut(.cancelAction)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    @ViewBuilder
+    private func progressBody(
+        _ progress: DuplicateFinder.Progress?
+    ) -> some View {
+        if let progress, progress.stage == .folderScan {
+            // Reading folders is bound by syscalls per entry, not by bytes, so
+            // a byte bar here would sit at zero through the longest part of
+            // the pass. Count what is actually being done instead.
+            ProgressView()
+            Text(stageLabel(progress.stage))
+                .foregroundStyle(.secondary)
+            Text("\(Format.count(progress.filesHashed)) éléments lus")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        } else if let progress, progress.stage != .collecting,
+                  progress.bytesToHash > 0 {
+            ProgressView(
+                value: Double(progress.bytesHashed),
+                total: Double(progress.bytesToHash)
+            )
+            .frame(maxWidth: 280)
+            Text(stageLabel(progress.stage))
+                .foregroundStyle(.secondary)
+            Text("\(Format.bytes(progress.bytesHashed)) sur \(Format.bytes(progress.bytesToHash)) · \(Format.count(progress.filesHashed)) fichiers sur \(Format.count(progress.filesToHash))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        } else {
+            ProgressView()
+            Text("Recherche des candidats…")
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private func stageLabel(_ stage: DuplicateFinder.Progress.Stage) -> String {
         switch stage {
         case .collecting: "Recherche des candidats…"
+        case .folderScan: "Lecture des dossiers candidats…"
+        case .folderCompare: "Comparaison des dossiers…"
         case .prefixPass: "Lecture des débuts de fichiers…"
         case .fullPass: "Comparaison du contenu…"
         }
@@ -129,7 +153,7 @@ struct DuplicatesView: View {
             ContentUnavailableView {
                 Label("Aucun doublon", systemImage: "doc.on.doc")
             } description: {
-                Text("Aucun fichier d'au moins \(Preferences.shared.duplicateThreshold.label) n'existe ici en plusieurs exemplaires. Les dossiers repliés (node_modules, paquets…) ne sont pas comparés ; le seuil se règle dans les Réglages.")
+                Text("Aucun fichier d'au moins \(Preferences.shared.duplicateThreshold.label), ni aucun dossier d'au moins \(Preferences.shared.duplicateFolderThreshold.label), n'existe ici en plusieurs exemplaires. Les deux seuils se règlent dans les Réglages.")
             }
         } else {
             loaded(groups)
@@ -172,6 +196,25 @@ struct DuplicatesView: View {
         groups.first { $0.id == focused } ?? groups.first
     }
 
+    /// "Estimation haute" is not hedging, it is the truth of the measure: APFS
+    /// clones share their space invisibly, so some of these bytes may already
+    /// be counted once. Said more loudly when folders are in the list —
+    /// duplicating a folder in the Finder is *how* clones get made, so the gap
+    /// between promised and freed is widest exactly there.
+    private func summaryLine(
+        _ groups: [ScanModel.DuplicateGroupDisplay], copies: Int
+    ) -> String {
+        let folders = groups.count { $0.isFolder }
+        let head = folders == 0
+            ? "dans \(Format.count(groups.count)) groupes · \(Format.count(copies)) copies"
+            : folders == 1
+                ? "dans 1 groupe de dossiers et \(Format.count(groups.count - folders)) groupes de fichiers · \(Format.count(copies)) copies"
+                : "dans \(Format.count(folders)) groupes de dossiers et \(Format.count(groups.count - folders)) groupes de fichiers · \(Format.count(copies)) copies"
+        return folders == 0
+            ? "\(head) · estimation haute, les clones APFS partagent déjà leur espace"
+            : "\(head) · estimation haute : un dossier dupliqué dans le Finder est un clone APFS, dont l'espace est déjà partagé"
+    }
+
     private func summary(_ groups: [ScanModel.DuplicateGroupDisplay]) -> some View {
         let reclaimable = groups.reduce(Int64(0)) { $0 + $1.reclaimableBytes }
         let copies = groups.reduce(0) { $0 + $1.copyCount }
@@ -184,13 +227,13 @@ struct DuplicatesView: View {
                 // "Estimation haute" is not hedging, it is the truth of the
                 // measure: APFS clones share their space invisibly, so some
                 // of these bytes may already be counted once.
-                Text("dans \(Format.count(groups.count)) groupes · \(Format.count(copies)) copies · estimation haute, les clones APFS partagent déjà leur espace")
+                Text(summaryLine(groups, copies: copies))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let dropped = model.duplicates?.droppedCount, dropped > 0 {
                     Text(dropped == 1
-                         ? "1 fichier ignoré (modifié ou illisible depuis l'analyse)"
-                         : "\(Format.count(dropped)) fichiers ignorés (modifiés ou illisibles depuis l'analyse)")
+                         ? "1 élément ignoré (modifié ou illisible depuis l'analyse)"
+                         : "\(Format.count(dropped)) éléments ignorés (modifiés ou illisibles depuis l'analyse)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -262,10 +305,23 @@ struct DuplicatesView: View {
         )) { group in
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(group.name)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) · \(Format.bytes(group.reclaimableBytes)) récupérables")
+                    HStack(spacing: 5) {
+                        if group.isFolder {
+                            Text("dossier")
+                                .font(.caption2)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(.quaternary, in: .capsule)
+                                .foregroundStyle(.secondary)
+                                .help("Dossier entièrement identique, contenu vérifié fichier par fichier. Les fichiers qu'il contient ne sont plus listés séparément.")
+                        }
+                        Text(group.name)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Text(group.isFolder
+                         ? "\(Format.count(group.copyCount)) dossiers · \(Format.bytes(group.eachBytes)) · \(Format.bytes(group.reclaimableBytes)) récupérables"
+                         : "\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) · \(Format.bytes(group.reclaimableBytes)) récupérables")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -323,7 +379,7 @@ struct DuplicatesView: View {
     /// the file that will still exist afterwards.
     private func selectKeeper(of group: ScanModel.DuplicateGroupDisplay) {
         let keeper = model.duplicateKeeper(for: group)
-        if let kept = group.copies.first(where: { $0.fileID == keeper })
+        if let kept = group.copies.first(where: { $0.identity == keeper })
             ?? group.copies.first {
             model.selection = [kept.id]
         }
@@ -350,14 +406,16 @@ struct DuplicatesView: View {
                             CopyCard(
                                 model: model,
                                 copy: copy,
-                                isKept: copy.fileID == keeper,
+                                isKept: copy.identity == keeper,
                                 isSelected: model.selection.contains(copy.id),
                                 onSelect: {
                                     model.selection = [copy.id]
                                     pane = .cards
                                 },
                                 onKeep: {
-                                    model.setDuplicateKeeper(copy.fileID, for: group.id)
+                                    model.setDuplicateKeeper(
+                                        copy.identity, for: group.id
+                                    )
                                 }
                             )
                         }
@@ -400,7 +458,7 @@ struct DuplicatesView: View {
         guard let copy = group.copies.first(where: {
             model.selection.contains($0.id)
         }) else { return }
-        model.setDuplicateKeeper(copy.fileID, for: group.id)
+        model.setDuplicateKeeper(copy.identity, for: group.id)
     }
 
     private func markFromCards(
@@ -439,10 +497,10 @@ struct DuplicatesView: View {
 
     private func detailHeader(
         _ group: ScanModel.DuplicateGroupDisplay,
-        keeper: DuplicateFinder.FileID?,
+        keeper: ScanModel.CopyIdentity?,
         groups: [ScanModel.DuplicateGroupDisplay]
     ) -> some View {
-        let others = group.copies.count { $0.fileID != keeper }
+        let others = group.copies.count { $0.identity != keeper }
         let freed = keeper.map { group.freedBytes(keeping: $0) } ?? 0
         let isMarked = model.isDuplicateMarked(group.id)
 
@@ -452,9 +510,14 @@ struct DuplicatesView: View {
                     .fontWeight(.semibold)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) chacune")
+                Text(group.isFolder
+                     ? "\(Format.count(group.copyCount)) dossiers · \(Format.bytes(group.eachBytes)) chacun · \(Format.count(group.fileCount)) fichiers · estimation haute"
+                     : "\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) chacune")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .help(group.isFolder
+                          ? "Dupliquer un dossier dans le Finder (⌘D) crée des clones APFS, qui partagent leur espace sans que rien ne le signale : le gain annoncé est un maximum, souvent supérieur à ce qui sera réellement libéré."
+                          : "")
             }
             Spacer()
             if isMarked {
@@ -471,8 +534,12 @@ struct DuplicatesView: View {
                 } label: {
                     Label(
                         others == 1
-                            ? "Marquer : l'autre copie · \(Format.bytes(freed))"
-                            : "Marquer : les \(others) autres copies · \(Format.bytes(freed))",
+                            ? (group.isFolder
+                               ? "Marquer : l'autre dossier · \(Format.bytes(freed))"
+                               : "Marquer : l'autre copie · \(Format.bytes(freed))")
+                            : (group.isFolder
+                               ? "Marquer : les \(others) autres dossiers · \(Format.bytes(freed))"
+                               : "Marquer : les \(others) autres copies · \(Format.bytes(freed))"),
                         systemImage: "trash.circle"
                     )
                 }
@@ -514,7 +581,8 @@ private struct CopyCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             FileThumbnail(
-                path: copy.path, isPackage: copy.isPackage, fallbackPadding: 20
+                path: copy.path, isDirectory: copy.isDirectory,
+                isPackage: copy.isPackage, fallbackPadding: 20
             )
             .frame(maxWidth: .infinity)
             .frame(height: 110)
@@ -581,7 +649,12 @@ private struct CopyCard: View {
         .onTapGesture(perform: onSelect)
         .help(copy.path)
         .contextMenu {
-            Button("Voir dans l'arborescence") { model.reveal(copy.id) }
+            // A folder card is shown *selected in its parent*: opening it
+            // would replace the list being worked in with its contents, which
+            // answers a question nobody asked.
+            Button("Voir dans l'arborescence") {
+                model.reveal(copy.id, selectingInParent: copy.isDirectory)
+            }
             Button("Afficher dans le Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting(
                     [URL(fileURLWithPath: copy.path)]

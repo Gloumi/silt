@@ -23,6 +23,16 @@ extension Fixture {
         }
     }
 
+    /// `A` and `B` are twins, `C` is unrelated but happens to hold the same
+    /// `x` — everything the display rules have to get right, in one tree.
+    func threeFolders() throws {
+        for root in ["A", "B"] {
+            try file("\(root)/x.bin", content: filler(1, count: 300))
+            try file("\(root)/sub/y.bin", content: filler(2, count: 300))
+        }
+        try file("C/x.bin", content: filler(1, count: 300))
+    }
+
     /// A named pipe. Opening one with no writer blocks inside the kernel, which
     /// is the whole reason the manifest records it and never touches it.
     func fifo(_ relative: String) throws {
@@ -500,5 +510,135 @@ struct DigestCacheTests {
         #expect(cache.digest(for: key, size: 200, modTime: 1_000) == nil)
         let prefix = DuplicateFinder.DigestCache.Key(fileID: id, limit: 16)
         #expect(cache.digest(for: prefix, size: 100, modTime: 1_000) == nil)
+    }
+}
+
+@Suite("Folder coverage")
+struct FolderCoverageTests {
+
+    private func node(_ store: NodeStore, _ path: [String]) throws -> Int32 {
+        try #require(store.descendant(of: 0, at: path))
+    }
+
+    @Test("Only the topmost group of a nest is shown")
+    func topmostOnly() async throws {
+        let fixture = try Fixture()
+        try fixture.threeFolders()
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let outer = [try node(store, ["A"]), try node(store, ["B"])]
+        let inner = [try node(store, ["A", "sub"]), try node(store, ["B", "sub"])]
+
+        let plan = FolderCoverage.plan(for: [inner, outer], in: store)
+        // Order in is irrelevant — depth decides, so the outer pair wins
+        // whichever way the engine happened to report them.
+        #expect(plan.visible == [1])
+    }
+
+    @Test("An inner group with a copy outside the covered folders stays")
+    func partiallyCoveredGroupSurvives() async throws {
+        let fixture = try Fixture()
+        try fixture.threeFolders()
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let outer = [try node(store, ["A"]), try node(store, ["B"])]
+        // `A/sub` is covered by the outer group, `C` is not — the pair is
+        // still worth resolving, and hiding it would lose that.
+        let mixed = [try node(store, ["A", "sub"]), try node(store, ["C"])]
+
+        let plan = FolderCoverage.plan(for: [outer, mixed], in: store)
+        #expect(Set(plan.visible) == [0, 1])
+    }
+
+    @Test("Only the non-canonical copies absorb, so {A/x, C/x} survives")
+    func absorptionSparesTheCanonicalCopy() async throws {
+        let fixture = try Fixture()
+        try fixture.threeFolders()
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let a = try node(store, ["A"])
+        let b = try node(store, ["B"])
+        let plan = FolderCoverage.plan(for: [[a, b]], in: store)
+
+        // One of the two survives, and it is the shallower/alphabetically
+        // first — never both, never neither.
+        #expect(plan.absorbing.count == 1)
+        #expect(plan.absorbing == [b])
+        // So the file group {A/x, B/x, C/x} loses only B/x and keeps its two
+        // remaining members, which is a duplicate the user can still act on.
+        let hidden = [
+            try node(store, ["A", "x.bin"]),
+            try node(store, ["B", "x.bin"]),
+            try node(store, ["C", "x.bin"]),
+        ].filter { FolderCoverage.hasAncestor(of: $0, in: plan.absorbing, store: store) }
+        #expect(hidden == [try node(store, ["B", "x.bin"])])
+    }
+
+    @Test("Managed storage never becomes the copy that survives")
+    func canonicalPrefersUnmanaged() async throws {
+        let fixture = try Fixture()
+        try fixture.threeFolders()
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let a = try node(store, ["A"])
+        let b = try node(store, ["B"])
+        // Same depth, so the tie falls to the managed flag before the name:
+        // an app's own folder is a poor thing to designate as the survivor.
+        let plan = FolderCoverage.plan(
+            for: [[a, b]], in: store, isManaged: { $0 == a }
+        )
+        #expect(plan.absorbing == [a])
+    }
+
+    @Test("A search about something inside the folder absorbs nothing")
+    func searchInsideDoesNotAbsorb() async throws {
+        let fixture = try Fixture()
+        try fixture.threeFolders()
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let a = try node(store, ["A"])
+        let b = try node(store, ["B"])
+        // What `searchMask.matches` says while the user is looking for
+        // `x.bin`: the folders are kept because they hold a result, but the
+        // query is not about them. Absorbing here would hide the very files
+        // being searched for.
+        let plan = FolderCoverage.plan(
+            for: [[a, b]], in: store, absorbs: { _ in false }
+        )
+        #expect(plan.visible == [0])
+        #expect(plan.absorbing.isEmpty)
+    }
+
+    @Test("Duplication inside the copy that survives is never swallowed")
+    func internalDuplicationSurvives() async throws {
+        let fixture = try Fixture()
+        // Two identical files *inside* each copy, so `{A/p, A/q, B/p, B/q}` is
+        // one file group that overlaps the folder group entirely.
+        for root in ["A", "B"] {
+            for name in ["p.bin", "q.bin"] {
+                try fixture.file("\(root)/\(name)", content: filler(5, count: 300))
+            }
+        }
+        var store = await ScanEngine.scan(root: fixture.path).store
+        let a = try #require(store.child(of: 0, named: "A"))
+        let b = try #require(store.child(of: 0, named: "B"))
+
+        let plan = FolderCoverage.plan(for: [[a, b]], in: store)
+        #expect(plan.absorbing == [b])
+        let copies = try ["A", "B"].flatMap { root in
+            try ["p.bin", "q.bin"].map {
+                try #require(store.descendant(of: 0, at: [root, $0]))
+            }
+        }
+        let surviving = copies.filter {
+            !FolderCoverage.hasAncestor(of: $0, in: plan.absorbing, store: store)
+        }
+        // `{A/p, A/q}` is still two copies of one content: the folder group
+        // takes B away, and what A duplicates inside itself stays actionable.
+        #expect(surviving.count == 2)
+        #expect(surviving.allSatisfy { store.parent[Int($0)] == a })
+
+        // And it survives B actually going to the Trash, from the same result
+        // in memory — the engine is not run again.
+        store.markDeleted(b)
+        #expect(surviving.allSatisfy { !store.isEffectivelyDeleted($0) })
+        #expect(store.isEffectivelyDeleted(
+            try #require(store.descendant(of: 0, at: ["B", "p.bin"]))
+        ))
     }
 }

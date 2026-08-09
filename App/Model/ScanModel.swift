@@ -83,7 +83,7 @@ final class ScanModel {
             case .treemap: "Blocs — surface proportionnelle à la taille"
             case .list: "Liste — éléments triés par taille"
             case .largeFiles: "Fichiers volumineux — les plus gros du dossier et de ses sous-dossiers"
-            case .duplicates: "Doublons — fichiers au contenu identique dans ce dossier et ses sous-dossiers"
+            case .duplicates: "Doublons — dossiers et fichiers au contenu identique dans ce dossier et ses sous-dossiers"
             case .apps: "Applications — ce que chaque application occupe, bundle et fichiers liés"
             case .cleanup: "Caches et résidus — ce que vos outils régénèrent tout seuls"
             case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
@@ -268,6 +268,7 @@ final class ScanModel {
         var scanID: Int
         var node: Int32
         var thresholdBytes: Int64
+        var folderThresholdBytes: Int64
         var scanning: Bool
     }
 
@@ -275,6 +276,8 @@ final class ScanModel {
         DuplicatesKey(
             scanID: scanID, node: currentNode,
             thresholdBytes: Preferences.shared.duplicateThreshold.bytes,
+            folderThresholdBytes:
+                Preferences.shared.duplicateFolderThreshold.bytes,
             scanning: isScanning
         )
     }
@@ -292,9 +295,9 @@ final class ScanModel {
     /// deletion, a search. Never on a click.
     private(set) var duplicateDisplay: [DuplicateGroupDisplay] = []
 
-    /// The storage each group keeps, by content digest. Defaults to the
-    /// newest copy outside app-managed storage; moved card by card by the user.
-    private var duplicateKeepers: [[UInt8]: DuplicateFinder.FileID] = [:]
+    /// What each group keeps, by group id. Defaults to the newest copy
+    /// outside app-managed storage; moved card by card by the user.
+    private var duplicateKeepers: [[UInt8]: CopyIdentity] = [:]
 
     /// Groups promised to the trash, by content digest. Marking is the cheap,
     /// reversible gesture — nothing touches the disk until « Supprimer… »
@@ -330,12 +333,25 @@ final class ScanModel {
         )
     }
 
+    /// What a group keeps, whichever kind of group it is.
+    ///
+    /// Two cards of a file group can name one storage — they are hard links —
+    /// so a file keeper is an inode, not a node. A folder has no such thing:
+    /// a directory cannot be hard-linked, and its identity is the node.
+    enum CopyIdentity: Hashable {
+        case storage(DuplicateFinder.FileID)
+        case folder(Int32)
+    }
+
     /// One path holding a copy.
     struct DuplicateCopy: Identifiable, Hashable {
         /// The node — doubles as the identity and what selection understands.
         let id: Int32
-        /// Storage identity: cards sharing it are hard links to one file.
-        let fileID: DuplicateFinder.FileID
+        /// What « Conservée » points at: an inode for a file, the node itself
+        /// for a folder.
+        let identity: CopyIdentity
+        /// Folders are shown in the same list, above the files.
+        let isDirectory: Bool
         let name: String
         let path: String
         /// Folder holding the copy, relative to the folder on screen. Nil for
@@ -357,23 +373,30 @@ final class ScanModel {
     }
 
     struct DuplicateGroupDisplay: Identifiable, Hashable {
+        /// The engine's digest behind a domain byte, so a folder group and a
+        /// file group can never share a row identity, a mark or a keeper.
         let id: [UInt8]
         let name: String
+        let isFolder: Bool
         let copyCount: Int
+        /// Regular files in one copy of a folder group; zero for a file group,
+        /// where the count would only ever be one.
+        let fileCount: Int
         /// On-disk cost of one copy — what every copy of the group weighs.
         let eachBytes: Int64
         let reclaimableBytes: Int64
-        /// Newest storage first, and within a storage newest path first.
+        /// Newest first, ties broken by depth then path.
         let copies: [DuplicateCopy]
         /// The newest copy living outside managed storage — or the newest of
         /// all when there is nothing else to prefer.
-        let defaultKeeper: DuplicateFinder.FileID?
-        /// Cost of each storage whose every hard link is listed here — the
-        /// only ones whose deletion actually returns bytes.
-        let freeableStorages: [DuplicateFinder.FileID: Int64]
+        let defaultKeeper: CopyIdentity?
+        /// Cost of each copy whose deletion actually returns bytes: for a file,
+        /// a storage all of whose hard links are listed here; for a folder,
+        /// what its own arithmetic says survives it.
+        let freeableStorages: [CopyIdentity: Int64]
 
         /// Bytes actually freed by keeping `keeper` and trashing the rest.
-        func freedBytes(keeping keeper: DuplicateFinder.FileID) -> Int64 {
+        func freedBytes(keeping keeper: CopyIdentity) -> Int64 {
             freeableStorages.reduce(Int64(0)) { sum, entry in
                 entry.key == keeper ? sum : sum + entry.value
             }
@@ -937,14 +960,17 @@ final class ScanModel {
     ///
     /// Used from the cleanup list, where a finding is a path with no relation to
     /// where the user currently stands.
-    func reveal(_ node: Int32) {
+    /// `selectingInParent` is what a duplicate folder card asks for: the
+    /// question is "where does this copy live", and stepping *into* it answers
+    /// a different one while replacing the list the user was working in.
+    func reveal(_ node: Int32, selectingInParent: Bool = false) {
         guard let store, node >= 0, Int(node) < store.count else { return }
         othersScope = nil
         trail = ancestry(of: node)
 
         // Standing *inside* a file is not a thing, and neither is standing
         // inside a folder the scanner collapsed: show it selected in its parent.
-        if canEnter(node) {
+        if canEnter(node), !selectingInParent || trail.count <= 1 {
             selection = []
         } else {
             trail.removeLast()
@@ -1059,7 +1085,9 @@ final class ScanModel {
         for node in selection.sorted() {
             let path = store.path(of: node)
             let name = store.name(of: node)
-            if hasAncestor(of: node, in: claimed, store: store) { continue }
+            if FolderCoverage.hasAncestor(of: node, in: claimed, store: store) {
+                continue
+            }
             let verdict = DenyList.verdict(for: path)
             if case .forbidden(let reason) = verdict {
                 plan.refused.append("\(name) — \(reason)")
@@ -1081,20 +1109,6 @@ final class ScanModel {
 
         guard !plan.requests.isEmpty || !plan.refused.isEmpty else { return }
         deletionPlan = plan
-    }
-
-    /// True when one of `node`'s ancestors is in `set` — the node is already
-    /// covered by something else.
-    private func hasAncestor(
-        of node: Int32, in set: Set<Int32>, store: NodeStore
-    ) -> Bool {
-        var current = node
-        while true {
-            let next = store.parent[Int(current)]
-            if next == current { return false } // root points at itself
-            if set.contains(next) { return true }
-            current = next
-        }
     }
 
     /// Builds a plan from paths that were never part of any scanned tree —
@@ -1605,6 +1619,7 @@ final class ScanModel {
         duplicatesRunningKey = key
         var options = DuplicateFinder.Options()
         options.minimumSize = key.thresholdBytes
+        options.folderMinimumSize = key.folderThresholdBytes
         let node = key.node
         let id = scanID
         // Progress arrives from worker threads; only the throttled snapshots
@@ -1674,6 +1689,11 @@ final class ScanModel {
     /// search narrows the list like it narrows everything else. All from data
     /// already in memory — none of it rereads a byte off the disk.
     ///
+    /// Order matters here and is the subject of half the comments below:
+    /// managed filter, then the visible folder groups, then absorption, then
+    /// the managed filter on the files. Any other arrangement makes one of the
+    /// four steps quietly undo another.
+    ///
     /// Called by the view's `.task` when `duplicateDisplayKey` moves.
     func rebuildDuplicateDisplay() {
         guard let store, let duplicates else {
@@ -1684,8 +1704,99 @@ final class ScanModel {
         }
         let currentPath = store.path(of: currentNode)
         let prefix = currentPath.hasSuffix("/") ? currentPath : currentPath + "/"
-        var groups: [DuplicateGroupDisplay] = []
         var hidden = 0
+
+        func card(
+            _ node: Int32, identity: CopyIdentity, isHardlinked: Bool
+        ) -> DuplicateCopy {
+            let path = store.path(of: node)
+            let parent = store.path(of: store.parent[Int(node)])
+            let relative: String? = parent == currentPath
+                ? nil
+                : parent.hasPrefix(prefix)
+                    ? String(parent.dropFirst(prefix.count))
+                    : parent
+            let name = store.name(of: node)
+            let managed = Self.managedOwner(
+                of: path, relativeFolder: relative, name: name
+            )
+            return DuplicateCopy(
+                id: node,
+                identity: identity,
+                isDirectory: store.isDirectory(node),
+                name: name,
+                path: path,
+                relativeFolder: relative,
+                modTime: store.modTime[Int(node)],
+                isHardlinked: isHardlinked,
+                isPackage: store.flags[Int(node)].contains(.package),
+                isManaged: managed.isManaged,
+                managedBy: managed.owner
+            )
+        }
+
+        // ---- Folder groups.
+        var folderCandidates: [(display: DuplicateGroupDisplay, folders: [Int32])] = []
+        for group in duplicates.folderGroups {
+            let live = group.folders.filter {
+                !store.isEffectivelyDeleted($0) && (searchMask?.keeps($0) ?? true)
+            }
+            guard live.count >= 2 else { continue }
+            let copies = live.map {
+                card($0, identity: .folder($0), isHardlinked: false)
+            }
+            if !duplicatesShowManaged, copies.count(where: { !$0.isManaged }) < 2 {
+                hidden += 1
+                continue
+            }
+            // Recomputed over the copies still standing: a trashed or filtered
+            // copy takes its contribution with it.
+            let freeable = live.map { group.freeableBytes[$0] ?? 0 }
+            var byIdentity: [CopyIdentity: Int64] = [:]
+            for (node, bytes) in zip(live, freeable) {
+                byIdentity[.folder(node)] = bytes
+            }
+            let names = Set(copies.map(\.name))
+            folderCandidates.append((
+                DuplicateGroupDisplay(
+                    id: [Self.folderGroupDomain] + group.digest,
+                    name: names.count == 1 ? names.first! : "Dossiers identiques",
+                    isFolder: true,
+                    copyCount: copies.count,
+                    fileCount: group.fileCount,
+                    eachBytes: group.bytesEach,
+                    reclaimableBytes:
+                        freeable.reduce(0, +) - (freeable.max() ?? 0),
+                    copies: copies,
+                    defaultKeeper: (copies.first { !$0.isManaged }
+                        ?? copies.first)?.identity,
+                    freeableStorages: byIdentity
+                ),
+                live
+            ))
+        }
+
+        // Which groups survive the "topmost only" rule, and which copies
+        // swallow the files under them. Both rules live in `FolderCoverage`,
+        // where they can be tested against a real tree.
+        let managed = Set(
+            folderCandidates.flatMap(\.display.copies)
+                .filter(\.isManaged).map(\.id)
+        )
+        let coverage = FolderCoverage.plan(
+            for: folderCandidates.map(\.folders), in: store,
+            isManaged: { managed.contains($0) },
+            // `keeps` is true for a folder that merely *contains* a result, so
+            // a search for a file name would surface the folder group and have
+            // it eat the very files being looked for. Absorb only when the
+            // query is about the folder itself.
+            absorbs: { searchMask == nil || searchMask?.matches($0) == true }
+        )
+        let visibleFolders = coverage.visible.map { folderCandidates[$0] }
+        let absorbed = coverage.absorbing
+
+        // ---- File groups, minus whatever a folder above them now covers.
+        var fileGroups: [DuplicateGroupDisplay] = []
         for group in duplicates.groups {
             var storages: [DuplicateFinder.Storage] = []
             for storage in group.storages {
@@ -1693,40 +1804,26 @@ final class ScanModel {
                 kept.nodes = storage.nodes.filter { node in
                     !store.isEffectivelyDeleted(node)
                         && (searchMask?.keeps(node) ?? true)
+                        && !FolderCoverage.hasAncestor(
+                            of: node, in: absorbed, store: store
+                        )
                 }
                 if !kept.nodes.isEmpty { storages.append(kept) }
             }
+            // A group entirely covered by a folder group falls below two
+            // members and disappears through the guard that was already here.
             guard storages.count >= 2 else { continue }
 
             var copies: [DuplicateCopy] = []
-            var freeable: [DuplicateFinder.FileID: Int64] = [:]
+            var freeable: [CopyIdentity: Int64] = [:]
             for storage in storages {
                 if storage.nodes.count == storage.linkCount {
-                    freeable[storage.fileID] = storage.allocated
+                    freeable[.storage(storage.fileID)] = storage.allocated
                 }
                 for node in storage.nodes {
-                    let path = store.path(of: node)
-                    let parent = store.path(of: store.parent[Int(node)])
-                    let relative: String? = parent == currentPath
-                        ? nil
-                        : parent.hasPrefix(prefix)
-                            ? String(parent.dropFirst(prefix.count))
-                            : parent
-                    let name = store.name(of: node)
-                    let managed = Self.managedOwner(
-                        of: path, relativeFolder: relative, name: name
-                    )
-                    copies.append(DuplicateCopy(
-                        id: node,
-                        fileID: storage.fileID,
-                        name: name,
-                        path: path,
-                        relativeFolder: relative,
-                        modTime: store.modTime[Int(node)],
-                        isHardlinked: storage.linkCount > 1,
-                        isPackage: store.flags[Int(node)].contains(.package),
-                        isManaged: managed.isManaged,
-                        managedBy: managed.owner
+                    copies.append(card(
+                        node, identity: .storage(storage.fileID),
+                        isHardlinked: storage.linkCount > 1
                     ))
                 }
             }
@@ -1735,44 +1832,57 @@ final class ScanModel {
             // storages make a real duplicate, one user file plus a clipboard
             // blob or a `.next` chunk does not.
             let userStorages = Set(
-                copies.filter { !$0.isManaged }.map(\.fileID)
+                copies.filter { !$0.isManaged }.map(\.identity)
             )
             if !duplicatesShowManaged, userStorages.count < 2 {
                 hidden += 1
                 continue
             }
             let names = Set(copies.map(\.name))
-            groups.append(DuplicateGroupDisplay(
-                id: group.digest,
+            fileGroups.append(DuplicateGroupDisplay(
+                id: [Self.fileGroupDomain] + group.digest,
                 name: names.count == 1 ? names.first! : "Contenus identiques",
+                isFolder: false,
                 copyCount: copies.count,
+                fileCount: 0,
                 eachBytes: storages.first?.allocated ?? 0,
                 reclaimableBytes: DuplicateFinder.reclaimableBytes(of: storages),
                 copies: copies,
                 defaultKeeper: (copies.first { !$0.isManaged } ?? copies.first)?
-                    .fileID,
+                    .identity,
                 freeableStorages: freeable
             ))
         }
-        duplicateDisplay = groups
+
+        // Folders first: they are the bigger decision, and resolving one
+        // removes several file groups underneath it.
+        duplicateDisplay =
+            visibleFolders.map(\.display)
+                .sorted { $0.reclaimableBytes > $1.reclaimableBytes }
+            + fileGroups
         duplicatesHiddenGroupCount = hidden
-        // Keepers and marks follow the groups: digests no longer on screen
-        // go, and a keeper whose storage was itself trashed falls back to the
-        // newest.
-        var keepers: [[UInt8]: DuplicateFinder.FileID] = [:]
-        for group in groups {
+        // Keepers and marks follow the groups: ids no longer on screen go, and
+        // a keeper whose copy was itself trashed falls back to the newest.
+        var keepers: [[UInt8]: CopyIdentity] = [:]
+        for group in duplicateDisplay {
             if let chosen = duplicateKeepers[group.id],
-               group.copies.contains(where: { $0.fileID == chosen }) {
+               group.copies.contains(where: { $0.identity == chosen }) {
                 keepers[group.id] = chosen
             }
         }
         duplicateKeepers = keepers
-        duplicateMarked = duplicateMarked.intersection(groups.map(\.id))
+        duplicateMarked = duplicateMarked.intersection(duplicateDisplay.map(\.id))
     }
+
+    /// Domain byte in front of every group id. Both kinds of group key their
+    /// row identity, their mark and their keeper on a digest, and two SHA-256
+    /// values being equal is only *unlikely*; a byte makes it impossible.
+    private static let fileGroupDomain: UInt8 = 0
+    private static let folderGroupDomain: UInt8 = 1
 
     /// The storage this group keeps — the user's pick, or the newest copy
     /// outside managed storage.
-    func duplicateKeeper(for group: DuplicateGroupDisplay) -> DuplicateFinder.FileID? {
+    func duplicateKeeper(for group: DuplicateGroupDisplay) -> CopyIdentity? {
         duplicateKeepers[group.id] ?? group.defaultKeeper
     }
 
@@ -1865,8 +1975,8 @@ final class ScanModel {
         return nil
     }
 
-    func setDuplicateKeeper(_ fileID: DuplicateFinder.FileID, for groupID: [UInt8]) {
-        duplicateKeepers[groupID] = fileID
+    func setDuplicateKeeper(_ identity: CopyIdentity, for groupID: [UInt8]) {
+        duplicateKeepers[groupID] = identity
     }
 
     func isDuplicateMarked(_ groupID: [UInt8]) -> Bool {
@@ -1898,7 +2008,7 @@ final class ScanModel {
         var bytes: Int64 = 0
         for group in duplicateDisplay where duplicateMarked.contains(group.id) {
             guard let keeper = duplicateKeeper(for: group) else { continue }
-            copies += group.copies.count { $0.fileID != keeper }
+            copies += group.copies.count { $0.identity != keeper }
             bytes += group.freedBytes(keeping: keeper)
         }
         return (duplicateMarked.count, copies, bytes)
@@ -1910,7 +2020,7 @@ final class ScanModel {
         var doomed: Set<Int32> = []
         for group in duplicateDisplay where duplicateMarked.contains(group.id) {
             guard let keeper = duplicateKeeper(for: group) else { continue }
-            for copy in group.copies where copy.fileID != keeper {
+            for copy in group.copies where copy.identity != keeper {
                 doomed.insert(copy.id)
             }
         }

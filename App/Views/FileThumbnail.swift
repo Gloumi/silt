@@ -13,6 +13,10 @@ import SwiftUI
 /// The caller frames it; `aspectRatio(.fit)` does the rest.
 struct FileThumbnail: View {
     let path: String
+    /// Folders reach this view too, since a duplicate can be one. Hard-coded
+    /// false until then, which dropped every folder onto the generic document
+    /// icon — the one picture guaranteed to be wrong.
+    var isDirectory: Bool = false
     let isPackage: Bool
     /// Pixel size asked of the generator. Ask for the largest the layout can
     /// show — the image scales down well and up badly.
@@ -32,7 +36,7 @@ struct FileThumbnail: View {
             } else {
                 Image(nsImage: IconCache.shared.icon(
                     name: (path as NSString).lastPathComponent,
-                    isDirectory: false, isPackage: isPackage
+                    isDirectory: isDirectory, isPackage: isPackage
                 ))
                 .resizable()
                 .aspectRatio(contentMode: .fit)

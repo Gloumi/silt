@@ -45,6 +45,29 @@ enum DuplicateThreshold: Int, CaseIterable, Identifiable {
     }
 }
 
+/// Below what size the duplicates view stops proposing whole folders.
+///
+/// Its own setting rather than the file threshold: verifying a folder reads
+/// every file inside it, so the cost curve is nothing like the file one, and a
+/// user who wants small duplicate files found does not thereby want every
+/// ten-megabyte folder on the disk read end to end.
+enum DuplicateFolderThreshold: Int, CaseIterable, Identifiable {
+    case tenMB = 10_000_000
+    case hundredMB = 100_000_000
+    case oneGB = 1_000_000_000
+
+    var id: Int { rawValue }
+    var bytes: Int64 { Int64(rawValue) }
+
+    var label: String {
+        switch self {
+        case .tenMB: "10 Mo"
+        case .hundredMB: "100 Mo"
+        case .oneGB: "1 Go"
+        }
+    }
+}
+
 /// The global "default view" choice: a fixed presentation, or whatever
 /// browsing view was on screen last.
 enum DefaultViewSetting: RawRepresentable, Hashable {
@@ -91,6 +114,7 @@ final class Preferences {
         static let largeFilesAge = "largeFilesAgeFilter"
         static let recentSearches = "recentSearches"
         static let duplicateThreshold = "duplicateSizeThreshold"
+        static let duplicateFolderThreshold = "duplicateFolderSizeThreshold"
     }
 
     /// Queries the user has actually run, most recent first.
@@ -234,6 +258,15 @@ final class Preferences {
         }
     }
 
+    /// Floor of the folder pass of the same view. Higher than the file floor
+    /// by default: confirming a folder means reading every file in it.
+    var duplicateFolderThreshold: DuplicateFolderThreshold {
+        didSet {
+            UserDefaults.standard.set(duplicateFolderThreshold.rawValue,
+                                      forKey: Key.duplicateFolderThreshold)
+        }
+    }
+
     var useLogicalSize: Bool {
         didSet { UserDefaults.standard.set(useLogicalSize, forKey: Key.logicalSize) }
     }
@@ -273,6 +306,9 @@ final class Preferences {
         duplicateThreshold = DuplicateThreshold(
             rawValue: defaults.integer(forKey: Key.duplicateThreshold)
         ) ?? .oneMB
+        duplicateFolderThreshold = DuplicateFolderThreshold(
+            rawValue: defaults.integer(forKey: Key.duplicateFolderThreshold)
+        ) ?? .hundredMB
     }
 
     /// Scan options matching the current preferences.
@@ -345,6 +381,16 @@ struct SettingsView: View {
                     ForEach(DuplicateThreshold.allCases) { Text($0.label).tag($0) }
                 }
                 Text("Seuls les fichiers d'au moins cette taille sont comparés dans la vue Doublons. Un seuil plus bas en trouve davantage, mais allonge la lecture du disque.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Doublons — dossiers d'au moins",
+                       selection: $preferences.duplicateFolderThreshold) {
+                    ForEach(DuplicateFolderThreshold.allCases) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                Text("Les dossiers entièrement identiques sont proposés en tête de la vue Doublons, et les fichiers qu'ils contiennent y sont regroupés. Confirmer un dossier oblige à lire chacun de ses fichiers : un seuil bas peut coûter cher sur un disque de développement.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
