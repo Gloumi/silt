@@ -193,7 +193,9 @@ struct ContentView: View {
             DeletionSheet(
                 plan: box.plan,
                 onCancel: { model.deletionPlan = nil },
-                onConfirm: { Task { await model.confirmDeletion() } }
+                onConfirm: { excluded in
+                    Task { await model.confirmDeletion(excluding: excluded) }
+                }
             )
         }
         .sheet(item: Bindable(snapshots).request) { request in
