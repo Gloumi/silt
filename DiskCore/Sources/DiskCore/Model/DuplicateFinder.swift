@@ -23,6 +23,10 @@ public enum DuplicateFinder {
         /// Files smaller than this never become candidates. Below about a
         /// megabyte duplicates are innumerable and worthless to a cleanup.
         public var minimumSize: Int64 = 1_000_000
+        /// Folders smaller than this never become candidates. Nil disables the
+        /// folder pass entirely, which is what every caller that only wants
+        /// files should pass.
+        public var folderMinimumSize: Int64?
         /// Bytes hashed in the first pass. Files no larger than this skip the
         /// full pass entirely — their prefix is their content.
         public var prefixLength: Int = 128 * 1024
@@ -70,19 +74,36 @@ public enum DuplicateFinder {
     }
 
     public struct Result: Sendable {
+        /// Folders whose entire contents hashed identical, sorted by
+        /// descending `reclaimableBytes`. Empty unless `folderMinimumSize`
+        /// asked for them.
+        ///
+        /// Nested groups are all here: when `A/` ≡ `B/`, `A/sub` ≡ `B/sub` is
+        /// reported too. Showing only the topmost is the display's business —
+        /// once the user resolves `A`, the duplication inside what survives is
+        /// still real, and an engine that had dropped it would have to read the
+        /// disk again to find it.
+        public var folderGroups: [FolderGroup]
         /// Sorted by descending `reclaimableBytes`.
         public var groups: [Group]
         /// Candidate files that entered the hashing pipeline.
         public var candidateCount: Int
-        /// Total bytes read across both passes.
+        /// Total bytes read, across every pass.
         public var bytesHashed: Int64
         /// Candidates silently dropped: vanished, changed size, or unreadable
-        /// between the scan and the hash. Normal life, not an error.
+        /// between the scan and the hash — plus folders that failed to verify
+        /// for the same reasons. Normal life, not an error.
         public var droppedCount: Int
     }
 
     public struct Progress: Sendable {
-        public enum Stage: Sendable { case collecting, prefixPass, fullPass }
+        public enum Stage: Sendable {
+            case collecting, prefixPass, fullPass
+            /// Reading candidate folders entry by entry. Bound by syscalls
+            /// rather than bytes, so it reports files rather than a byte bar.
+            case folderScan
+            case folderCompare
+        }
         public var stage: Stage
         public var bytesHashed: Int64
         public var bytesToHash: Int64
@@ -103,19 +124,43 @@ public enum DuplicateFinder {
         onProgress: (@Sendable (Progress) -> Void)? = nil
     ) async -> Result? {
         guard !store.isEmpty, root >= 0, Int(root) < store.count else {
-            return Result(groups: [], candidateCount: 0, bytesHashed: 0, droppedCount: 0)
+            return Result(
+                folderGroups: [], groups: [], candidateCount: 0,
+                bytesHashed: 0, droppedCount: 0
+            )
         }
         onProgress?(Progress(
             stage: .collecting, bytesHashed: 0, bytesToHash: 0,
             filesHashed: 0, filesToHash: 0
         ))
 
+        // One cache for both passes: a file the folder pass already read must
+        // not be read again by the file pass a second later.
+        let cache = DigestCache()
+        var dropped = 0
+        var totalHashed: Int64 = 0
+
+        // ---- Folders first. They are the coarser answer, and the files they
+        // cover get absorbed into them at display time.
+        var folderGroups: [FolderGroup] = []
+        if let folderMinimum = options.folderMinimumSize {
+            guard let folders = await findFolders(
+                in: store, under: root, minimumSize: folderMinimum,
+                options: options, cache: cache, onProgress: onProgress
+            ) else { return nil }
+            folderGroups = folders.groups
+            dropped += folders.dropped
+            totalHashed += folders.bytesHashed
+            onProgress?(Progress(
+                stage: .collecting, bytesHashed: 0, bytesToHash: 0,
+                filesHashed: 0, filesToHash: 0
+            ))
+        }
+
         // ---- Phase 0: size buckets, free because the scan measured everything.
         guard let collected = collect(in: store, under: root, options: options)
         else { return nil }
         let candidateCount = collected.buckets.values.reduce(0) { $0 + $1.count }
-        var dropped = 0
-        var totalHashed: Int64 = 0
 
         // ---- Phase 1: stat, fold hard links, then hash prefixes.
         // Stat also re-checks the size: a file that grew or shrank since the
@@ -139,6 +184,7 @@ public enum DuplicateFinder {
                         linkCount: Int(info.st_nlink),
                         allocated: store.totalAlloc[Int(node)],
                         size: size,
+                        modTime: Int64(info.st_mtimespec.tv_sec),
                         path: path
                     )
                 } else {
@@ -155,7 +201,7 @@ public enum DuplicateFinder {
         guard let prefixPass = await hash(
             jobs: prefixJobs, limit: options.prefixLength,
             workerCount: options.workerCount, stage: .prefixPass,
-            onProgress: onProgress
+            cache: cache, onProgress: onProgress
         ) else { return nil }
         dropped += prefixPass.dropped
         totalHashed += prefixPass.bytesRead
@@ -183,7 +229,7 @@ public enum DuplicateFinder {
         guard let fullPass = await hash(
             jobs: fullJobs.flatMap { $0 }, limit: nil,
             workerCount: options.workerCount, stage: .fullPass,
-            onProgress: onProgress
+            cache: cache, onProgress: onProgress
         ) else { return nil }
         dropped += fullPass.dropped
         totalHashed += fullPass.bytesRead
@@ -203,6 +249,7 @@ public enum DuplicateFinder {
             ($0.reclaimableBytes, $0.logicalSize) > ($1.reclaimableBytes, $1.logicalSize)
         }
         return Result(
+            folderGroups: folderGroups,
             groups: groups,
             candidateCount: candidateCount,
             bytesHashed: totalHashed,
@@ -287,28 +334,85 @@ public enum DuplicateFinder {
     // MARK: - Hashing
 
     /// One inode waiting to be hashed, with everything the final group needs.
-    private struct Draft: Sendable {
+    ///
+    /// Module-visible, like the four functions below it: the folder pass hashes
+    /// files the very same way and rebuilding that machinery beside it would
+    /// mean two worker pools competing for the same disk.
+    struct Draft: Sendable {
         var fileID: FileID
-        var nodes: [Int32]
-        var linkCount: Int
-        var allocated: Int64
+        /// Nodes in the scanned tree, empty for a job the folder pass raised
+        /// from a live directory read.
+        var nodes: [Int32] = []
+        var linkCount: Int = 1
+        var allocated: Int64 = 0
         var size: Int64
+        /// Last modification, so a cached digest can be told from a stale one.
+        var modTime: Int64
         var path: String
     }
 
-    private struct HashPass {
+    struct HashPass {
         var digests: [FileID: [UInt8]]
         var bytesRead: Int64
         var dropped: Int
     }
 
+    /// Digests already computed during this run, so the folder pass and the
+    /// file pass never read the same bytes twice. A pair of duplicated project
+    /// folders means the same hundred thousand files are candidates in both.
+    ///
+    /// The key carries the *limit*, and that is not a detail. A prefix digest
+    /// and a whole-file digest are two different answers about one file; keyed
+    /// on the inode alone, the 128 KiB the folder pass read would come back a
+    /// second later as the file's full content, and Silt would offer to delete
+    /// files that are identical for one block and diverge after it.
+    ///
+    /// The entry is then *validated* against size and mtime rather than
+    /// trusted: an inode is reused the moment a file is deleted, and a rewrite
+    /// in place keeps both the inode and the size.
+    final class DigestCache: Sendable {
+        struct Key: Hashable {
+            var fileID: FileID
+            /// Bytes hashed; `-1` means the whole file.
+            var limit: Int
+        }
+
+        private struct Entry {
+            var digest: [UInt8]
+            var size: Int64
+            var modTime: Int64
+        }
+
+        private let entries = Mutex<[Key: Entry]>([:])
+
+        func digest(for key: Key, size: Int64, modTime: Int64) -> [UInt8]? {
+            entries.withLock { stored in
+                guard let entry = stored[key], entry.size == size,
+                      entry.modTime == modTime
+                else { return nil }
+                return entry.digest
+            }
+        }
+
+        func store(
+            _ digest: [UInt8], for key: Key, size: Int64, modTime: Int64
+        ) {
+            entries.withLock {
+                $0[key] = Entry(digest: digest, size: size, modTime: modTime)
+            }
+        }
+    }
+
     /// All shared mutable state of a hashing pass behind one lock, following
     /// `ScanEngine`'s pattern. The lock is taken per chunk, not per byte, and
     /// hashing itself happens outside it.
-    private final class HashState: Sendable {
+    final class HashState: Sendable {
         struct Inner {
             var nextJob = 0
             var bytesHashed: Int64 = 0
+            /// Of those, the ones a cache hit spared us. The progress bar wants
+            /// the first figure, the report wants the difference.
+            var bytesFromCache: Int64 = 0
             var filesHashed = 0
             var dropped = 0
             var digests: [FileID: [UInt8]] = [:]
@@ -318,11 +422,12 @@ public enum DuplicateFinder {
         init() { inner = Mutex(Inner(lastReport: .now)) }
     }
 
-    private static func hash(
+    static func hash(
         jobs: [Draft],
         limit: Int?,
         workerCount: Int,
         stage: Progress.Stage,
+        cache: DigestCache?,
         onProgress: (@Sendable (Progress) -> Void)?
     ) async -> HashPass? {
         guard !jobs.isEmpty else {
@@ -342,23 +447,29 @@ public enum DuplicateFinder {
                 group.addTask {
                     hashWorker(
                         jobs: jobs, limit: limit, state: state, stage: stage,
-                        bytesToHash: bytesToHash, onProgress: onProgress
+                        bytesToHash: bytesToHash, cache: cache,
+                        onProgress: onProgress
                     )
                 }
             }
         }
         if Task.isCancelled { return nil }
         return state.inner.withLock {
-            HashPass(digests: $0.digests, bytesRead: $0.bytesHashed, dropped: $0.dropped)
+            HashPass(
+                digests: $0.digests,
+                bytesRead: $0.bytesHashed - $0.bytesFromCache,
+                dropped: $0.dropped
+            )
         }
     }
 
-    private static func hashWorker(
+    static func hashWorker(
         jobs: [Draft],
         limit: Int?,
         state: HashState,
         stage: Progress.Stage,
         bytesToHash: Int64,
+        cache: DigestCache?,
         onProgress: (@Sendable (Progress) -> Void)?
     ) {
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
@@ -371,14 +482,40 @@ public enum DuplicateFinder {
             let job = jobs[index]
             let expected = limit.map { min(job.size, Int64($0)) } ?? job.size
 
+            let key = DigestCache.Key(fileID: job.fileID, limit: limit ?? -1)
+            if let known = cache?.digest(
+                for: key, size: job.size, modTime: job.modTime
+            ) {
+                state.inner.withLock { $0.digests[job.fileID] = known }
+                report(state: state, stage: stage, bytesToHash: bytesToHash,
+                       jobCount: jobs.count, read: expected, cached: true,
+                       finished: true, dropped: false, onProgress: onProgress)
+                continue
+            }
+
             // O_NOFOLLOW as defense in depth: the node was a regular file at
             // scan time and at stat time, but the path could have been swapped
-            // for a symlink since.
-            let fd = open(job.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            // for a symlink since. O_NONBLOCK because `open` on a named pipe
+            // with no writer blocks *inside the kernel*, and cancellation is
+            // only ever tested between blocks — one fifo would pin this worker
+            // until the app quits. It has no effect on a regular file.
+            let fd = open(job.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
             guard fd >= 0 else {
                 report(state: state, stage: stage, bytesToHash: bytesToHash,
-                       jobCount: jobs.count, read: 0, finished: true,
-                       dropped: true, onProgress: onProgress)
+                       jobCount: jobs.count, read: 0, cached: false,
+                       finished: true, dropped: true, onProgress: onProgress)
+                continue
+            }
+            // And confirm what we actually opened. The kind was decided before
+            // this call, by a listing or a stat that is now in the past.
+            var opened = stat()
+            guard fstat(fd, &opened) == 0,
+                  UInt32(opened.st_mode) & UInt32(S_IFMT) == UInt32(S_IFREG)
+            else {
+                close(fd)
+                report(state: state, stage: stage, bytesToHash: bytesToHash,
+                       jobCount: jobs.count, read: 0, cached: false,
+                       finished: true, dropped: true, onProgress: onProgress)
                 continue
             }
             // Streaming gigabytes through the page cache would evict what the
@@ -402,8 +539,8 @@ public enum DuplicateFinder {
                 }
                 remaining -= Int64(got)
                 report(state: state, stage: stage, bytesToHash: bytesToHash,
-                       jobCount: jobs.count, read: Int64(got), finished: false,
-                       dropped: false, onProgress: onProgress)
+                       jobCount: jobs.count, read: Int64(got), cached: false,
+                       finished: false, dropped: false, onProgress: onProgress)
             }
             close(fd)
             if Task.isCancelled { return }
@@ -412,33 +549,36 @@ public enum DuplicateFinder {
             // it has now, it is not what the size bucket was built from.
             if truncated || remaining > 0 {
                 report(state: state, stage: stage, bytesToHash: bytesToHash,
-                       jobCount: jobs.count, read: 0, finished: true,
-                       dropped: true, onProgress: onProgress)
+                       jobCount: jobs.count, read: 0, cached: false,
+                       finished: true, dropped: true, onProgress: onProgress)
                 continue
             }
             let digest = Array(hasher.finalize())
             state.inner.withLock { $0.digests[job.fileID] = digest }
+            cache?.store(digest, for: key, size: job.size, modTime: job.modTime)
             report(state: state, stage: stage, bytesToHash: bytesToHash,
-                   jobCount: jobs.count, read: 0, finished: true,
-                   dropped: false, onProgress: onProgress)
+                   jobCount: jobs.count, read: 0, cached: false,
+                   finished: true, dropped: false, onProgress: onProgress)
         }
     }
 
     /// Accumulates counters and forwards a throttled snapshot. The callback
     /// runs outside the lock: it hops to the main actor and must not hold up
     /// the other workers while it does.
-    private static func report(
+    static func report(
         state: HashState,
         stage: Progress.Stage,
         bytesToHash: Int64,
         jobCount: Int,
         read: Int64,
+        cached: Bool,
         finished: Bool,
         dropped: Bool,
         onProgress: (@Sendable (Progress) -> Void)?
     ) {
         let snapshot: Progress? = state.inner.withLock { inner in
             inner.bytesHashed += read
+            if cached { inner.bytesFromCache += read }
             if finished { inner.filesHashed += 1 }
             if dropped { inner.dropped += 1 }
             guard onProgress != nil else { return nil }
