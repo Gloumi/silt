@@ -508,8 +508,6 @@ final class ScanModel {
         case idle, preparing
     }
 
-    /// File currently shown in Quick Look, if any.
-    var previewURL: URL?
     /// Full Disk Access explainer, shown once and reachable from the Help menu
     /// and from the warning in the status bar.
     var showsWelcome = !Preferences.shared.hasSeenWelcome
@@ -621,6 +619,34 @@ final class ScanModel {
         if selection.count == 1 { return selection.first }
         if selection.count > 1 { return nil }
         return store == nil ? nil : currentNode
+    }
+
+    /// What Quick Look would show right now, in the order its arrow keys walk
+    /// them — the on-screen order, since that is the one the user is reading.
+    ///
+    /// Directories are dropped: there is nothing to preview in one, and an
+    /// empty panel is worse than no panel. A package counts as a file, the way
+    /// the Finder treats it. Nothing selected falls back to the inspected item,
+    /// which is the directory we are standing in, and so comes back empty —
+    /// that is what leaves space free to be page-down in the lists.
+    var previewItems: [URL] {
+        guard let store else { return [] }
+        func previewable(_ node: Int32) -> Bool {
+            !store.isDirectory(node) || store.flags[Int(node)].contains(.package)
+        }
+        guard !selection.isEmpty else {
+            guard let node = inspectedNode, previewable(node) else { return [] }
+            return [URL(fileURLWithPath: store.path(of: node))]
+        }
+        // Rows first, in their own order; then anything selected elsewhere —
+        // Large Files and Duplicates both tick items that are not children of
+        // the visible directory.
+        var picked = rows.filter { selection.contains($0) && previewable($0) }
+        let seen = Set(picked)
+        picked += selection
+            .filter { !seen.contains($0) && previewable($0) }
+            .sorted { store.path(of: $0) < store.path(of: $1) }
+        return picked.map { URL(fileURLWithPath: store.path(of: $0)) }
     }
 
     /// True when the node can be opened. A file cannot, and neither can a
@@ -1274,17 +1300,6 @@ final class ScanModel {
         )
         TrashLedger.save(kept)
         restorable = kept
-    }
-
-    /// Space opens a preview of the inspected item, and closes it again.
-    /// Directories have nothing to preview, so they are ignored rather than
-    /// opening an empty panel.
-    func togglePreview() {
-        if previewURL != nil { previewURL = nil; return }
-        guard let store, let node = inspectedNode,
-              !store.isDirectory(node) || store.flags[Int(node)].contains(.package)
-        else { return }
-        previewURL = URL(fileURLWithPath: store.path(of: node))
     }
 
     // MARK: - Uninstalling an application

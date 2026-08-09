@@ -5,6 +5,9 @@ import UniformTypeIdentifiers
 @main
 struct SiltApp: App {
     @State private var model = ScanModel()
+    /// Only here to put a Quick Look controller at the end of the responder
+    /// chain; see QuickLookPanel.
+    @NSApplicationDelegateAdaptor(QuickLookController.self) private var quickLook
 
     var body: some Scene {
         Window("Silt", id: "main") {
@@ -66,8 +69,10 @@ struct SiltApp: App {
                 Button("Remonter d'un niveau") { model.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
                     .disabled(model.trail.count <= 1)
-                Button("Aperçu rapide") { model.togglePreview() }
-                    .keyboardShortcut(.space, modifiers: [])
+                Button("Aperçu rapide") {
+                    QuickLookPanel.shared.toggle(model.previewItems)
+                }
+                .keyboardShortcut(.space, modifiers: [])
                 // The key-down monitor below swallows ⌘⌫ while a text field is
                 // being edited, so reaching this action always means the tree.
                 Button("Mettre à la corbeille") { model.requestDeletion() }
@@ -186,9 +191,6 @@ struct ContentView: View {
                 Preferences.shared.hasSeenWelcome = true
             }
         }
-        .sheet(item: Bindable(model).previewURL) { url in
-            QuickLookSheet(url: url) { model.previewURL = nil }
-        }
         .sheet(item: Bindable(model).deletionPlanBox) { box in
             DeletionSheet(
                 plan: box.plan,
@@ -274,6 +276,11 @@ struct ContentView: View {
             if let spaceMonitor { NSEvent.removeMonitor(spaceMonitor) }
             spaceMonitor = nil
         }
+        // An open panel follows the selection, the way it does in the Finder —
+        // including when its own arrow keys are what moved it.
+        .onChange(of: model.selection) {
+            QuickLookPanel.shared.update(model.previewItems)
+        }
     }
 
     /// Returns nil to consume the event, or the event to let it through.
@@ -297,26 +304,26 @@ struct ContentView: View {
     private func handleSpace(_ event: NSEvent) -> NSEvent? {
         guard event.keyCode == 49, // space
               event.modifierFlags
-                  .intersection([.command, .shift, .option, .control]).isEmpty,
-              let window = NSApp.keyWindow,
-              !(window is NSPanel), // Open panel, Settings: not our keyboard
-              !(window.firstResponder is NSTextView) // typing in a filter field
+                  .intersection([.command, .shift, .option, .control]).isEmpty
         else { return event }
 
-        if window.isSheet {
-            // One sheet at a time, so a non-nil preview URL means this sheet
-            // *is* the Quick Look one: space closes it, like the Finder. Any
-            // other sheet keeps its own keyboard handling.
-            guard model.previewURL != nil else { return event }
-            model.previewURL = nil
+        // Before the guard below, and not after: the preview panel is itself an
+        // NSPanel, and it holds the keyboard while it is up. Space closes it,
+        // like the Finder.
+        if QuickLookPanel.shared.isOpen {
+            QuickLookPanel.shared.close()
             return nil
         }
 
-        // Only swallow the key when a preview actually toggles; otherwise the
+        guard let window = NSApp.keyWindow,
+              !(window is NSPanel), // Open panel, Settings: not our keyboard
+              !(window.firstResponder is NSTextView), // typing in a filter field
+              !window.isSheet // sheets do their own previewing
+        else { return event }
+
+        // Only swallow the key when a preview actually opens; otherwise the
         // scroll views keep their page-down.
-        let before = model.previewURL
-        model.togglePreview()
-        return model.previewURL != before ? nil : event
+        return QuickLookPanel.shared.toggle(model.previewItems) ? nil : event
     }
 }
 

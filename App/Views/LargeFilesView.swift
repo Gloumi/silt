@@ -107,7 +107,9 @@ struct LargeFilesView: View {
                         // Straight to the preview, without routing through the
                         // selection: peeking at one file must not wipe a
                         // painstakingly ticked list.
-                        model.previewURL = URL(fileURLWithPath: store.path(of: node))
+                        QuickLookPanel.shared.show(
+                            [URL(fileURLWithPath: store.path(of: node))]
+                        )
                     }
                     Divider()
                     Button("Mettre à la corbeille", role: .destructive) {

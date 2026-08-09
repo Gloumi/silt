@@ -20,7 +20,6 @@ struct DeletionSheet: View {
     /// the sheet — so exclusion is applied by `confirmDeletion` at the end.
     @State private var excluded: Set<Int> = []
     @State private var selected: Int?
-    @State private var previewURL: URL?
 
     /// Below this the list is exactly as tall as its rows; past it, it
     /// scrolls, so a fifty-item batch cannot push the buttons off screen.
@@ -102,15 +101,18 @@ struct DeletionSheet: View {
         .frame(width: 500)
         // Space previews the selected row, the Finder gesture. A hidden
         // shortcut button rather than key handling: the global space monitor
-        // deliberately leaves sheets alone, and this is the pattern the Quick
-        // Look sheet itself already uses to close.
+        // deliberately leaves sheets alone. Closing again is its business
+        // though — by then the panel, not the sheet, holds the keyboard.
         .background {
             Button("") { previewSelected() }
                 .keyboardShortcut(.space, modifiers: [])
                 .opacity(0)
         }
-        .sheet(item: $previewURL) { url in
-            QuickLookSheet(url: url) { previewURL = nil }
+        // An open panel follows the row the arrow keys land on, since those keys
+        // reach the list from the panel too.
+        .onChange(of: selected) {
+            guard QuickLookPanel.shared.isOpen else { return }
+            previewSelected()
         }
     }
 
@@ -151,9 +153,7 @@ struct DeletionSheet: View {
         .padding(.vertical, 2)
         .tag(item.index)
         .contextMenu {
-            Button("Aperçu rapide") {
-                previewURL = URL(fileURLWithPath: item.request.path)
-            }
+            Button("Aperçu rapide") { preview(item.index) }
             Button("Afficher dans le Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting(
                     [URL(fileURLWithPath: item.request.path)]
@@ -170,10 +170,19 @@ struct DeletionSheet: View {
     }
 
     private func previewSelected() {
-        guard let selected, !excluded.contains(selected),
-              plan.requests.indices.contains(selected)
+        guard let selected else { return }
+        preview(selected)
+    }
+
+    /// The whole batch goes to the panel, not just the row that asked for it, so
+    /// the arrow keys walk the list the way they walk a selection in the Finder.
+    private func preview(_ index: Int) {
+        let items = remaining
+        guard let start = items.firstIndex(where: { $0.index == index })
         else { return }
-        previewURL = URL(fileURLWithPath: plan.requests[selected].path)
+        QuickLookPanel.shared.show(
+            items.map { URL(fileURLWithPath: $0.request.path) }, startingAt: start
+        )
     }
 
     /// Cautions whose item has been withdrawn go with it — warning about

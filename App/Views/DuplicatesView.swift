@@ -588,7 +588,7 @@ private struct CopyCard: View {
                 )
             }
             Button("Aperçu rapide") {
-                model.previewURL = URL(fileURLWithPath: copy.path)
+                QuickLookPanel.shared.show([URL(fileURLWithPath: copy.path)])
             }
             Divider()
             Button("Mettre à la corbeille", role: .destructive) {
