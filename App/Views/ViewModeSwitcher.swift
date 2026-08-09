@@ -55,9 +55,11 @@ struct BarButton: View {
 /// shows you the state you are *not* in — you have to know what unlit means.
 /// Side by side, both modes are named and the lit one is the answer.
 ///
-/// It keeps its slot even in the views it does not apply to, invisible rather
-/// than absent. Removing it would slide the view switcher sideways every time
-/// you left the drawn views — under a pointer that is usually on its way there.
+/// Gone entirely in the views it does not apply to, not merely dimmed: it sits
+/// at the *left* end of the bar's trailing run, so its coming and going eats
+/// into the flexible space instead of sliding the refresh button and the view
+/// switcher — which keep a constant distance from the window edge either way.
+/// An invisible-but-present slot was tried first and read as a hole in the bar.
 struct ColorModeSwitcher: View {
     let model: ScanModel
 
@@ -69,16 +71,16 @@ struct ColorModeSwitcher: View {
     }
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(ColorMode.allCases) { mode in
-                segment(mode)
+        if applies {
+            HStack(spacing: 2) {
+                ForEach(ColorMode.allCases) { mode in
+                    segment(mode)
+                }
             }
+            .padding(2)
+            .background(.quaternary.opacity(0.6), in: .capsule)
+            .overlay(alignment: .bottom) { tooltip }
         }
-        .padding(2)
-        .background(.quaternary.opacity(0.6), in: .capsule)
-        .overlay(alignment: .bottom) { tooltip }
-        .opacity(applies ? 1 : 0)
-        .disabled(!applies)
     }
 
     private func segment(_ mode: ColorMode) -> some View {

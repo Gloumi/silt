@@ -88,6 +88,8 @@ struct BrowserView: View {
                         TreemapView(model: model).padding(6)
                     case .largeFiles:
                         LargeFilesView(model: model, store: store)
+                    case .duplicates:
+                        DuplicatesView(model: model, store: store)
                     // The tools never reach here — the body branches to their
                     // views before this — but the switch must cover them.
                     case .list, .apps, .cleanup, .reboot, .snapshots, .trash:
@@ -266,6 +268,12 @@ private struct BreadcrumbBar: View {
             breadcrumbs
             Spacer(minLength: 8)
 
+            // First of the trailing run, against the spacer: everything to its
+            // right keeps a constant distance from the window edge, so this
+            // one can come and go with the drawn views without sliding the
+            // buttons the pointer is usually aiming for.
+            ColorModeSwitcher(model: model)
+
             // Re-tapping a volume in the sidebar now reuses the tree in memory,
             // so refreshing has to be something the user asks for explicitly.
             BarButton(
@@ -276,7 +284,6 @@ private struct BreadcrumbBar: View {
                 model.rescan()
             }
 
-            ColorModeSwitcher(model: model)
             ViewModeSwitcher(model: model)
                 .padding(.trailing, 12)
         }

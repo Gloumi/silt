@@ -25,6 +25,26 @@ enum AppearanceSetting: String, CaseIterable, Identifiable {
     }
 }
 
+/// Below what size the duplicates view stops looking. The steps are coarse on
+/// purpose: this decides how much of the disk gets read, not what counts as
+/// "identical".
+enum DuplicateThreshold: Int, CaseIterable, Identifiable {
+    case oneMB = 1_000_000
+    case tenMB = 10_000_000
+    case hundredMB = 100_000_000
+
+    var id: Int { rawValue }
+    var bytes: Int64 { Int64(rawValue) }
+
+    var label: String {
+        switch self {
+        case .oneMB: "1 Mo"
+        case .tenMB: "10 Mo"
+        case .hundredMB: "100 Mo"
+        }
+    }
+}
+
 /// The global "default view" choice: a fixed presentation, or whatever
 /// browsing view was on screen last.
 enum DefaultViewSetting: RawRepresentable, Hashable {
@@ -70,6 +90,7 @@ final class Preferences {
         static let colorMode = "colorMode"
         static let largeFilesAge = "largeFilesAgeFilter"
         static let recentSearches = "recentSearches"
+        static let duplicateThreshold = "duplicateSizeThreshold"
     }
 
     /// Queries the user has actually run, most recent first.
@@ -204,6 +225,15 @@ final class Preferences {
         }
     }
 
+    /// Floor of the duplicates view. Deciding how much disk the feature may
+    /// read belongs with the other scan-cost options, not in the view itself.
+    var duplicateThreshold: DuplicateThreshold {
+        didSet {
+            UserDefaults.standard.set(duplicateThreshold.rawValue,
+                                      forKey: Key.duplicateThreshold)
+        }
+    }
+
     var useLogicalSize: Bool {
         didSet { UserDefaults.standard.set(useLogicalSize, forKey: Key.logicalSize) }
     }
@@ -240,6 +270,9 @@ final class Preferences {
         largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
             .flatMap(AgeFilter.init(rawValue:)) ?? .all
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
+        duplicateThreshold = DuplicateThreshold(
+            rawValue: defaults.integer(forKey: Key.duplicateThreshold)
+        ) ?? .oneMB
     }
 
     /// Scan options matching the current preferences.
@@ -304,7 +337,14 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Toggle("Replier les dossiers de dépendances", isOn: $preferences.collapseDependencies)
-                Text("node_modules, .git, vendor, .venv gardent leur taille exacte mais ne sont pas indexés fichier par fichier. Sur un dossier de développement, cela divise par deux le nombre d'éléments.")
+                Text("node_modules, .git, .next, vendor, .venv gardent leur taille exacte mais ne sont pas indexés fichier par fichier. Sur un dossier de développement, cela divise par deux le nombre d'éléments.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Doublons — taille minimale", selection: $preferences.duplicateThreshold) {
+                    ForEach(DuplicateThreshold.allCases) { Text($0.label).tag($0) }
+                }
+                Text("Seuls les fichiers d'au moins cette taille sont comparés dans la vue Doublons. Un seuil plus bas en trouve davantage, mais allonge la lecture du disque.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

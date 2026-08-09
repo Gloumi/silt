@@ -18,18 +18,22 @@ final class ScanModel {
     }
 
     enum Presentation: String, CaseIterable, Identifiable {
-        case sunburst, treemap, list, largeFiles, apps, cleanup, reboot, snapshots
+        case sunburst, treemap, list, largeFiles, duplicates, apps, cleanup
+        case reboot, snapshots
         case trash
         var id: String { rawValue }
 
-        /// The four ways of looking at the tree. Applications, Cleanup and
+        /// The five ways of looking at the tree. Applications, Cleanup and
         /// Reboot are not among them: each is a destination of its own, reached
         /// from the sidebar.
-        static let browsing: [Presentation] = [.sunburst, .treemap, .list, .largeFiles]
+        static let browsing: [Presentation] = [
+            .sunburst, .treemap, .list, .largeFiles, .duplicates,
+        ]
 
-        /// The three ways of *standing in* a folder. Large files browses the
-        /// tree like the others, but it is a flat extract of a whole subtree —
-        /// "show me where this lives" needs an actual tree view to land in.
+        /// The three ways of *standing in* a folder. Large files and Duplicates
+        /// browse the tree like the others, but each is a flat extract of a
+        /// whole subtree — "show me where this lives" needs an actual tree view
+        /// to land in.
         static let treeViews: [Presentation] = [.sunburst, .treemap, .list]
 
         /// The two drawn views. They share a palette, so the colour mode means
@@ -49,6 +53,7 @@ final class ScanModel {
             case .treemap: "Blocs"
             case .list: "Liste"
             case .largeFiles: "Fichiers volumineux"
+            case .duplicates: "Doublons"
             case .apps: "Applications"
             case .cleanup: "Caches et résidus"
             case .reboot: "Redémarrage"
@@ -62,6 +67,7 @@ final class ScanModel {
             case .treemap: "square.grid.2x2"
             case .list: "list.bullet"
             case .largeFiles: "doc.text.magnifyingglass"
+            case .duplicates: "doc.on.doc"
             case .apps: "app.badge"
             case .cleanup: "wand.and.sparkles"
             case .reboot: "restart.circle"
@@ -77,6 +83,7 @@ final class ScanModel {
             case .treemap: "Blocs — surface proportionnelle à la taille"
             case .list: "Liste — éléments triés par taille"
             case .largeFiles: "Fichiers volumineux — les plus gros du dossier et de ses sous-dossiers"
+            case .duplicates: "Doublons — fichiers au contenu identique dans ce dossier et ses sous-dossiers"
             case .apps: "Applications — ce que chaque application occupe, bundle et fichiers liés"
             case .cleanup: "Caches et résidus — ce que vos outils régénèrent tout seuls"
             case .reboot: "Redémarrage — espace qu'un redémarrage libérerait"
@@ -226,6 +233,151 @@ final class ScanModel {
     var largeFilesAgeFilter: AgeFilter {
         get { Preferences.shared.largeFilesAgeFilter }
         set { Preferences.shared.largeFilesAgeFilter = newValue }
+    }
+
+    /// Identical-content groups under the directory on screen, or nil before
+    /// the first pass.
+    ///
+    /// Unlike every other derived pass this one reads file *contents* off the
+    /// disk, so finished results are cached per scope and survive deletions:
+    /// trashed copies are hidden at display time instead of rehashing the
+    /// survivors.
+    private(set) var duplicates: DuplicateFinder.Result? {
+        didSet { duplicatesResultVersion += 1 }
+    }
+    private(set) var duplicatesPhase: DuplicatesPhase = .idle
+    private(set) var duplicatesProgress: DuplicateFinder.Progress?
+    private var duplicatesTask: Task<Void, Never>?
+    /// Key the running task was started for, so coming back to the view while
+    /// it is still hashing resumes the wait instead of starting over.
+    private var duplicatesRunningKey: DuplicatesKey?
+    /// Finished results by scope, oldest first. Hashing a big folder costs
+    /// minutes of disk time; stepping out of it and back must not.
+    private var duplicatesCache: [(key: DuplicatesKey, result: DuplicateFinder.Result)] = []
+    private static let duplicatesCacheLimit = 8
+
+    enum DuplicatesPhase {
+        case idle, running, ready, cancelled
+    }
+
+    /// Everything the duplicates pass depends on. Deliberately *without*
+    /// `treeVersion`: deleting copies is the whole point of the view, and
+    /// rehashing gigabytes to remove a row would make the trash button
+    /// unaffordable. `visibleDuplicateGroups` filters instead.
+    struct DuplicatesKey: Hashable {
+        var scanID: Int
+        var node: Int32
+        var thresholdBytes: Int64
+        var scanning: Bool
+    }
+
+    var duplicatesKey: DuplicatesKey {
+        DuplicatesKey(
+            scanID: scanID, node: currentNode,
+            thresholdBytes: Preferences.shared.duplicateThreshold.bytes,
+            scanning: isScanning
+        )
+    }
+
+    /// Bumped whenever `duplicates` is replaced, so the display model below
+    /// knows a rebuild is due without comparing whole results.
+    private(set) var duplicatesResultVersion = 0
+
+    /// What the Doublons view actually draws — names, paths and per-group
+    /// arithmetic resolved once per *change* instead of once per render.
+    ///
+    /// `store.path(of:)` walks to the root; called per row per render it made
+    /// the first version of the view crawl past a few hundred groups. This is
+    /// rebuilt only when `duplicateDisplayKey` moves: a new result, a
+    /// deletion, a search. Never on a click.
+    private(set) var duplicateDisplay: [DuplicateGroupDisplay] = []
+
+    /// The storage each group keeps, by content digest. Defaults to the
+    /// newest copy outside app-managed storage; moved card by card by the user.
+    private var duplicateKeepers: [[UInt8]: DuplicateFinder.FileID] = [:]
+
+    /// Groups promised to the trash, by content digest. Marking is the cheap,
+    /// reversible gesture — nothing touches the disk until « Supprimer… »
+    /// shows the one recap sheet for the whole batch. Confirming per group
+    /// was tried first: triaging fifty groups meant fifty sheets.
+    private(set) var duplicateMarked: Set<[UInt8]> = []
+
+    /// Whether groups that are only duplicated *into* managed storage — an
+    /// application's own folders, or a tool's hidden directory — are listed.
+    /// Off by default: a clipboard manager holding a copy of a video the user
+    /// once copied, or Next.js duplicating its chunks under `.next`, is
+    /// technically a duplicate, but resolving it is the app's business more
+    /// than the user's.
+    var duplicatesShowManaged = false
+
+    /// Groups the toggle above is currently hiding, so the bar can say what
+    /// it is not showing instead of silently under-reporting.
+    private(set) var duplicatesHiddenGroupCount = 0
+
+    struct DuplicateDisplayKey: Hashable {
+        var resultVersion: Int
+        var deletionEpoch: Int
+        var searchVersion: Int
+        var showManaged: Bool
+    }
+
+    var duplicateDisplayKey: DuplicateDisplayKey {
+        DuplicateDisplayKey(
+            resultVersion: duplicatesResultVersion,
+            deletionEpoch: deletionEpoch,
+            searchVersion: searchVersion,
+            showManaged: duplicatesShowManaged
+        )
+    }
+
+    /// One path holding a copy.
+    struct DuplicateCopy: Identifiable, Hashable {
+        /// The node — doubles as the identity and what selection understands.
+        let id: Int32
+        /// Storage identity: cards sharing it are hard links to one file.
+        let fileID: DuplicateFinder.FileID
+        let name: String
+        let path: String
+        /// Folder holding the copy, relative to the folder on screen. Nil for
+        /// a direct child — "right here" is what the breadcrumb already says.
+        let relativeFolder: String?
+        let modTime: Int32
+        let isHardlinked: Bool
+        let isPackage: Bool
+        /// Sits in storage something else manages: an application's own
+        /// folders (container, caches, Application Support) or a tool's
+        /// hidden directory (`.next`, `.cache`…). Badged, and never the
+        /// default keeper: a clipboard manager's blob can be *newer* than the
+        /// document it copied, and "keep the newest" would then trash the
+        /// user's file to preserve a cache.
+        let isManaged: Bool
+        /// Who manages it, when the path says: an app name ("PastePal") or
+        /// the hidden folder itself (".next").
+        let managedBy: String?
+    }
+
+    struct DuplicateGroupDisplay: Identifiable, Hashable {
+        let id: [UInt8]
+        let name: String
+        let copyCount: Int
+        /// On-disk cost of one copy — what every copy of the group weighs.
+        let eachBytes: Int64
+        let reclaimableBytes: Int64
+        /// Newest storage first, and within a storage newest path first.
+        let copies: [DuplicateCopy]
+        /// The newest copy living outside managed storage — or the newest of
+        /// all when there is nothing else to prefer.
+        let defaultKeeper: DuplicateFinder.FileID?
+        /// Cost of each storage whose every hard link is listed here — the
+        /// only ones whose deletion actually returns bytes.
+        let freeableStorages: [DuplicateFinder.FileID: Int64]
+
+        /// Bytes actually freed by keeping `keeper` and trashing the rest.
+        func freedBytes(keeping keeper: DuplicateFinder.FileID) -> Int64 {
+            freeableStorages.reduce(Int64(0)) { sum, entry in
+                entry.key == keeper ? sum : sum + entry.value
+            }
+        }
     }
 
     /// Where the search looks. Both scopes read the *same* mask — retained bytes
@@ -540,6 +692,7 @@ final class ScanModel {
         largeFilesTask?.cancel()
         largeFiles = nil
         largeFilesPhase = .idle
+        resetDuplicates()
         lastDeletion = nil
         deletionMessage = nil
         scanID += 1
@@ -661,6 +814,7 @@ final class ScanModel {
         largeFilesTask?.cancel()
         largeFiles = nil
         largeFilesPhase = .idle
+        resetDuplicates()
         lastDeletion = nil
         deletionMessage = nil
         scanID += 1
@@ -910,10 +1064,18 @@ final class ScanModel {
         deletionPlan = plan
     }
 
-    func confirmDeletion() async {
+    /// `excluding` names the requests the user pulled back out on the recap
+    /// sheet, by index into the plan — the plan itself cannot be mutated
+    /// while the sheet is up without re-presenting it.
+    func confirmDeletion(excluding excluded: Set<Int> = []) async {
         // No store guard: an out-of-tree plan is deletable before any scan.
         guard let plan = deletionPlan else { return }
         deletionPlan = nil
+
+        let requests = plan.requests.enumerated()
+            .filter { !excluded.contains($0.offset) }
+            .map(\.element)
+        guard !requests.isEmpty else { return }
 
         // Capture sizes first: markDeleted zeroes them, and undo needs them.
         // Only for requests that came from the tree — an uninstaller's leftovers
@@ -921,7 +1083,7 @@ final class ScanModel {
         // every ancestor's total.
         var sizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
         if let store {
-            for request in plan.requests {
+            for request in requests {
                 guard let node = request.node else { continue }
                 let index = Int(node)
                 sizes[node] = (
@@ -930,8 +1092,6 @@ final class ScanModel {
                 )
             }
         }
-
-        let requests = plan.requests
         let report = await Task.detached { SafeDeleter.moveToTrash(requests) }.value
 
         for item in report.trashed {
@@ -1361,6 +1521,354 @@ final class ScanModel {
             largeFiles = top
             largeFilesPhase = .ready
         }
+    }
+
+    // MARK: - Duplicates
+
+    /// Called by the Doublons view when it appears and whenever its key changes.
+    ///
+    /// Unlike its siblings this one does *not* run detached: the finder is a
+    /// nonisolated async function, so it already executes off the main actor,
+    /// and staying a child of `duplicatesTask` is what lets Annuler stop the
+    /// disk reads mid-file instead of after the whole pass.
+    func ensureDuplicates() {
+        guard presentation == .duplicates, !isScanning, let store else {
+            duplicatesTask?.cancel()
+            duplicatesRunningKey = nil
+            duplicates = nil
+            duplicatesPhase = .idle
+            duplicatesProgress = nil
+            return
+        }
+        let key = duplicatesKey
+        if let cached = duplicatesCache.first(where: { $0.key == key }) {
+            duplicates = cached.result
+            duplicatesPhase = .ready
+            duplicatesProgress = nil
+            return
+        }
+        // Already hashing the very scope the view asks about — landing back on
+        // the view must rejoin that work, not throw its progress away.
+        if duplicatesPhase == .running, duplicatesRunningKey == key { return }
+        duplicatesTask?.cancel()
+        duplicates = nil
+        duplicatesPhase = .running
+        duplicatesProgress = nil
+        duplicatesRunningKey = key
+        var options = DuplicateFinder.Options()
+        options.minimumSize = key.thresholdBytes
+        let node = key.node
+        let id = scanID
+        // Progress arrives from worker threads; only the throttled snapshots
+        // for the pass still on screen may land in the model.
+        let onProgress: @Sendable (DuplicateFinder.Progress) -> Void = { [weak self] progress in
+            Task { @MainActor in
+                guard let self, self.scanID == id,
+                      self.duplicatesRunningKey == key else { return }
+                self.duplicatesProgress = progress
+            }
+        }
+        duplicatesTask = Task { [weak self] in
+            let found = await DuplicateFinder.find(
+                in: store, under: node, options: options, onProgress: onProgress
+            )
+            // Indices only mean anything within the store they came from: a
+            // result computed against the previous scan must die here.
+            guard let self, !Task.isCancelled, self.scanID == id else { return }
+            duplicatesRunningKey = nil
+            duplicatesProgress = nil
+            guard let found else {
+                duplicatesPhase = .cancelled
+                return
+            }
+            duplicates = found
+            duplicatesPhase = .ready
+            duplicatesCache.removeAll { $0.key == key }
+            duplicatesCache.append((key, found))
+            if duplicatesCache.count > Self.duplicatesCacheLimit {
+                duplicatesCache.removeFirst(
+                    duplicatesCache.count - Self.duplicatesCacheLimit
+                )
+            }
+        }
+    }
+
+    /// Leaving a scan behind. The cache goes too: its keys carry the old
+    /// `scanID`, so keeping the entries would only delay the memory coming back.
+    private func resetDuplicates() {
+        duplicatesTask?.cancel()
+        duplicatesTask = nil
+        duplicatesRunningKey = nil
+        duplicates = nil
+        duplicatesPhase = .idle
+        duplicatesProgress = nil
+        duplicatesCache = []
+        duplicateDisplay = []
+        duplicateKeepers = [:]
+        duplicateMarked = []
+        duplicatesHiddenGroupCount = 0
+    }
+
+    /// The Annuler button. Sets the phase itself: the task's own completion
+    /// path is guarded on `!Task.isCancelled` precisely so it cannot publish a
+    /// partial answer, which means it cannot publish the phase either.
+    func cancelDuplicates() {
+        guard duplicatesPhase == .running else { return }
+        duplicatesTask?.cancel()
+        duplicatesTask = nil
+        duplicatesRunningKey = nil
+        duplicatesPhase = .cancelled
+        duplicatesProgress = nil
+    }
+
+    /// Rebuilds `duplicateDisplay` from the raw result: copies trashed this
+    /// session disappear, a group reduced to a single copy follows them, and a
+    /// search narrows the list like it narrows everything else. All from data
+    /// already in memory — none of it rereads a byte off the disk.
+    ///
+    /// Called by the view's `.task` when `duplicateDisplayKey` moves.
+    func rebuildDuplicateDisplay() {
+        guard let store, let duplicates else {
+            duplicateDisplay = []
+            duplicateKeepers = [:]
+            duplicatesHiddenGroupCount = 0
+            return
+        }
+        let currentPath = store.path(of: currentNode)
+        let prefix = currentPath.hasSuffix("/") ? currentPath : currentPath + "/"
+        var groups: [DuplicateGroupDisplay] = []
+        var hidden = 0
+        for group in duplicates.groups {
+            var storages: [DuplicateFinder.Storage] = []
+            for storage in group.storages {
+                var kept = storage
+                kept.nodes = storage.nodes.filter { node in
+                    !store.flags[Int(node)].contains(.deleted)
+                        && (searchMask?.keeps(node) ?? true)
+                }
+                if !kept.nodes.isEmpty { storages.append(kept) }
+            }
+            guard storages.count >= 2 else { continue }
+
+            var copies: [DuplicateCopy] = []
+            var freeable: [DuplicateFinder.FileID: Int64] = [:]
+            for storage in storages {
+                if storage.nodes.count == storage.linkCount {
+                    freeable[storage.fileID] = storage.allocated
+                }
+                for node in storage.nodes {
+                    let path = store.path(of: node)
+                    let parent = store.path(of: store.parent[Int(node)])
+                    let relative: String? = parent == currentPath
+                        ? nil
+                        : parent.hasPrefix(prefix)
+                            ? String(parent.dropFirst(prefix.count))
+                            : parent
+                    let name = store.name(of: node)
+                    let managed = Self.managedOwner(
+                        of: path, relativeFolder: relative, name: name
+                    )
+                    copies.append(DuplicateCopy(
+                        id: node,
+                        fileID: storage.fileID,
+                        name: name,
+                        path: path,
+                        relativeFolder: relative,
+                        modTime: store.modTime[Int(node)],
+                        isHardlinked: storage.linkCount > 1,
+                        isPackage: store.flags[Int(node)].contains(.package),
+                        isManaged: managed.isManaged,
+                        managedBy: managed.owner
+                    ))
+                }
+            }
+            // A "duplicate" that only exists because an app or a build tool
+            // squirrelled a copy away is hidden unless asked for: two *user*
+            // storages make a real duplicate, one user file plus a clipboard
+            // blob or a `.next` chunk does not.
+            let userStorages = Set(
+                copies.filter { !$0.isManaged }.map(\.fileID)
+            )
+            if !duplicatesShowManaged, userStorages.count < 2 {
+                hidden += 1
+                continue
+            }
+            let names = Set(copies.map(\.name))
+            groups.append(DuplicateGroupDisplay(
+                id: group.digest,
+                name: names.count == 1 ? names.first! : "Contenus identiques",
+                copyCount: copies.count,
+                eachBytes: storages.first?.allocated ?? 0,
+                reclaimableBytes: DuplicateFinder.reclaimableBytes(of: storages),
+                copies: copies,
+                defaultKeeper: (copies.first { !$0.isManaged } ?? copies.first)?
+                    .fileID,
+                freeableStorages: freeable
+            ))
+        }
+        duplicateDisplay = groups
+        duplicatesHiddenGroupCount = hidden
+        // Keepers and marks follow the groups: digests no longer on screen
+        // go, and a keeper whose storage was itself trashed falls back to the
+        // newest.
+        var keepers: [[UInt8]: DuplicateFinder.FileID] = [:]
+        for group in groups {
+            if let chosen = duplicateKeepers[group.id],
+               group.copies.contains(where: { $0.fileID == chosen }) {
+                keepers[group.id] = chosen
+            }
+        }
+        duplicateKeepers = keepers
+        duplicateMarked = duplicateMarked.intersection(groups.map(\.id))
+    }
+
+    /// The storage this group keeps — the user's pick, or the newest copy
+    /// outside managed storage.
+    func duplicateKeeper(for group: DuplicateGroupDisplay) -> DuplicateFinder.FileID? {
+        duplicateKeepers[group.id] ?? group.defaultKeeper
+    }
+
+    /// User-content islands inside Library. Apple parks cloud *documents*
+    /// there, and those are the user's files in every sense that matters:
+    /// iCloud Drive under Mobile Documents, the Dropbox/Drive/OneDrive
+    /// mounts under CloudStorage. Everything else in a Library is app or
+    /// system plumbing by construction — that inversion is the whole design:
+    /// the set of tools storing things in Library is unbounded and cannot be
+    /// enumerated (an Android SDK here, a JetBrains cache there), while the
+    /// set of user areas Apple carved out of it is two entries and stable.
+    private static let libraryUserAreas: Set<Substring> = [
+        "Mobile Documents", "CloudStorage",
+    ]
+
+    /// The first component under a *structural* Library — `/Library`,
+    /// `/System/Library`, or the `Library` of any user's home — or nil when
+    /// the path is not inside one. Positional on purpose: a folder the user
+    /// happened to name "Library" in their documents must not trigger this.
+    private static func libraryComponent(of path: String) -> Substring? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        let libIndex: Int
+        if parts.first == "Library" {
+            libIndex = 0
+        } else if parts.count > 1, parts[0] == "System", parts[1] == "Library" {
+            libIndex = 1
+        } else if parts.count > 2, parts[0] == "Users", parts[2] == "Library" {
+            libIndex = 2
+        } else {
+            return nil
+        }
+        return parts.count > libIndex + 1 ? parts[libIndex + 1] : nil
+    }
+
+    /// Purely a naming refinement — coverage never depends on this list.
+    /// Where the badge can do better than the raw top-level folder, it does:
+    /// order is precedence, and Developer/Android come first because a
+    /// simulator's device data is a complete fake filesystem with its own
+    /// Caches and Application Support inside, and "interne à CoreSimulator"
+    /// names what is going on where "interne à nsurlsessiond" only baffles.
+    /// A non-nil owner overrides the derived component where it would be
+    /// noise ("sdk").
+    private static let namedManagedFolders: [(folder: String, owner: String?)] = [
+        ("/Library/Developer/", nil),
+        ("/Library/Android/", "Android SDK"),
+        ("/Library/Containers/", nil),
+        ("/Library/Group Containers/", nil),
+        ("/Library/Application Support/", nil),
+        ("/Library/Caches/", nil),
+    ]
+
+    /// Whether a copy sits in storage something else manages, and what to
+    /// call that something.
+    ///
+    /// Two families: anything inside a structural Library except the user
+    /// areas above (the owner is the app when the path names one), and
+    /// hidden directories (`.next`, `.cache`… — the owner is the folder
+    /// itself). The dot check runs on the path *relative to the folder on
+    /// screen*, so deliberately scanning inside a hidden folder does not
+    /// mark everything in sight.
+    private static func managedOwner(
+        of path: String, relativeFolder: String?, name: String
+    ) -> (isManaged: Bool, owner: String?) {
+        if let below = libraryComponent(of: path),
+           !libraryUserAreas.contains(below) {
+            return (true, refinedOwner(of: path) ?? String(below))
+        }
+        if let hidden = relativeFolder?.split(separator: "/")
+            .first(where: { $0.hasPrefix(".") }) {
+            return (true, String(hidden))
+        }
+        if name.hasPrefix(".") { return (true, nil) }
+        return (false, nil)
+    }
+
+    /// A better badge than the raw folder, where one is known. Bundle
+    /// identifiers keep their last component only: "com.onmyway133.PastePal"
+    /// reads better as "PastePal".
+    private static func refinedOwner(of path: String) -> String? {
+        for (folder, owner) in namedManagedFolders {
+            guard let range = path.range(of: folder) else { continue }
+            if let owner { return owner }
+            var component = path[range.upperBound...]
+            if let slash = component.firstIndex(of: "/") {
+                component = component[..<slash]
+            }
+            guard !component.isEmpty else { return nil }
+            return component.split(separator: ".").last.map(String.init)
+        }
+        return nil
+    }
+
+    func setDuplicateKeeper(_ fileID: DuplicateFinder.FileID, for groupID: [UInt8]) {
+        duplicateKeepers[groupID] = fileID
+    }
+
+    func isDuplicateMarked(_ groupID: [UInt8]) -> Bool {
+        duplicateMarked.contains(groupID)
+    }
+
+    func toggleDuplicateMark(_ groupID: [UInt8]) {
+        if duplicateMarked.contains(groupID) {
+            duplicateMarked.remove(groupID)
+        } else {
+            duplicateMarked.insert(groupID)
+        }
+    }
+
+    func markAllDuplicateGroups() {
+        duplicateMarked = Set(duplicateDisplay.map(\.id))
+    }
+
+    func unmarkAllDuplicateGroups() {
+        duplicateMarked = []
+    }
+
+    /// What the marks add up to, for the bar: copies promised to the trash
+    /// and the bytes their deletion would actually free — keeper arithmetic,
+    /// evaluated against the *current* keepers, so moving a « Conservée »
+    /// after marking is honoured.
+    var duplicateMarkedStats: (groups: Int, copies: Int, bytes: Int64) {
+        var copies = 0
+        var bytes: Int64 = 0
+        for group in duplicateDisplay where duplicateMarked.contains(group.id) {
+            guard let keeper = duplicateKeeper(for: group) else { continue }
+            copies += group.copies.count { $0.fileID != keeper }
+            bytes += group.freedBytes(keeping: keeper)
+        }
+        return (duplicateMarked.count, copies, bytes)
+    }
+
+    /// Sends every marked group's non-kept copies into the existing deletion
+    /// flow: one recap sheet, one confirmation, for the whole batch.
+    func requestMarkedDuplicatesDeletion() {
+        var doomed: Set<Int32> = []
+        for group in duplicateDisplay where duplicateMarked.contains(group.id) {
+            guard let keeper = duplicateKeeper(for: group) else { continue }
+            for copy in group.copies where copy.fileID != keeper {
+                doomed.insert(copy.id)
+            }
+        }
+        guard !doomed.isEmpty else { return }
+        selection = doomed
+        requestDeletion()
     }
 
     // MARK: - Search
