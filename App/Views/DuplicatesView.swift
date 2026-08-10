@@ -153,7 +153,7 @@ struct DuplicatesView: View {
             ContentUnavailableView {
                 Label("Aucun doublon", systemImage: "doc.on.doc")
             } description: {
-                Text("Aucun fichier d'au moins \(Preferences.shared.duplicateThreshold.label), ni aucun dossier d'au moins \(Preferences.shared.duplicateFolderThreshold.label), n'existe ici en plusieurs exemplaires. Les deux seuils se règlent dans les Réglages.")
+                Text("Aucun fichier d'au moins \(Format.bytes(Preferences.shared.duplicateThresholdBytes)), ni aucun dossier d'au moins \(Format.bytes(Preferences.shared.duplicateFolderThresholdBytes)), n'existe ici en plusieurs exemplaires. Les deux seuils se règlent dans les Réglages.")
             }
         } else {
             loaded(groups)

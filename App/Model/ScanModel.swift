@@ -275,9 +275,9 @@ final class ScanModel {
     var duplicatesKey: DuplicatesKey {
         DuplicatesKey(
             scanID: scanID, node: currentNode,
-            thresholdBytes: Preferences.shared.duplicateThreshold.bytes,
+            thresholdBytes: Preferences.shared.duplicateThresholdBytes,
             folderThresholdBytes:
-                Preferences.shared.duplicateFolderThreshold.bytes,
+                Preferences.shared.duplicateFolderThresholdBytes,
             scanning: isScanning
         )
     }

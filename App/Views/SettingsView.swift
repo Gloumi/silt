@@ -25,46 +25,49 @@ enum AppearanceSetting: String, CaseIterable, Identifiable {
     }
 }
 
-/// Below what size the duplicates view stops looking. The steps are coarse on
-/// purpose: this decides how much of the disk gets read, not what counts as
-/// "identical".
-enum DuplicateThreshold: Int, CaseIterable, Identifiable {
-    case oneMB = 1_000_000
-    case tenMB = 10_000_000
-    case hundredMB = 100_000_000
-
-    var id: Int { rawValue }
-    var bytes: Int64 { Int64(rawValue) }
-
-    var label: String {
-        switch self {
-        case .oneMB: "1 Mo"
-        case .tenMB: "10 Mo"
-        case .hundredMB: "100 Mo"
-        }
-    }
-}
-
-/// Below what size the duplicates view stops proposing whole folders.
+/// The ladder both duplicate thresholds move along: 1, 2, 5 per decade.
 ///
-/// Its own setting rather than the file threshold: verifying a folder reads
-/// every file inside it, so the cost curve is nothing like the file one, and a
-/// user who wants small duplicate files found does not thereby want every
-/// ten-megabyte folder on the disk read end to end.
-enum DuplicateFolderThreshold: Int, CaseIterable, Identifiable {
-    case tenMB = 10_000_000
-    case hundredMB = 100_000_000
-    case oneGB = 1_000_000_000
+/// A slider rather than a menu because the interesting range is at the bottom.
+/// Photos — the single most duplicated thing anyone owns — sit between about
+/// 300 Ko and 3 Mo, and a floor of 1 Mo made the feature blind to half of
+/// them; on a real home folder the 512 Ko–1 Mo band alone held as many files
+/// as everything above 1 Mo put together.
+///
+/// Stepped rather than continuous, because "473 Ko" is a value nobody chose
+/// and every label would read like a measurement error. Non-proportional,
+/// because precision is worth something at 200 Ko and nothing whatsoever
+/// between 400 and 500 Mo — which is exactly what a logarithmic ladder buys.
+enum SizeLadder {
 
-    var id: Int { rawValue }
-    var bytes: Int64 { Int64(rawValue) }
+    /// Floor at 50 Ko on purpose: below it are thumbnails, icons and
+    /// `.DS_Store`, duplicated everywhere and worth deleting nowhere.
+    static let file: [Int64] = [
+        50_000, 100_000, 200_000, 500_000,
+        1_000_000, 2_000_000, 5_000_000,
+        10_000_000, 20_000_000, 50_000_000,
+        100_000_000, 200_000_000, 500_000_000, 1_000_000_000,
+    ]
 
-    var label: String {
-        switch self {
-        case .tenMB: "10 Mo"
-        case .hundredMB: "100 Mo"
-        case .oneGB: "1 Go"
-        }
+    /// Starts higher: confirming a folder means reading every file inside it,
+    /// so the cheap end of this ladder is not cheap at all.
+    static let folder: [Int64] = [
+        1_000_000, 2_000_000, 5_000_000,
+        10_000_000, 20_000_000, 50_000_000,
+        100_000_000, 200_000_000, 500_000_000,
+        1_000_000_000, 2_000_000_000, 5_000_000_000, 10_000_000_000,
+    ]
+
+    /// Nearest rung, so a value stored by an older build — the three-way menu
+    /// wrote plain byte counts, which is why no migration is needed — always
+    /// lands somewhere sensible.
+    static func index(of bytes: Int64, in ladder: [Int64]) -> Int {
+        ladder.enumerated().min {
+            abs($0.element - bytes) < abs($1.element - bytes)
+        }?.offset ?? 0
+    }
+
+    static func bytes(at index: Int, in ladder: [Int64]) -> Int64 {
+        ladder[min(max(index, 0), ladder.count - 1)]
     }
 }
 
@@ -116,6 +119,16 @@ final class Preferences {
         static let duplicateThreshold = "duplicateSizeThreshold"
         static let duplicateFolderThreshold = "duplicateFolderSizeThreshold"
     }
+
+    /// Both thresholds are plain byte counts, which is what the three-way menus
+    /// they replace already wrote — so an existing setting reads back as the
+    /// rung nearest to itself and nobody's choice is lost.
+    /// 500 Ko rather than the 1 Mo of the three-way menu this replaces.
+    /// Measured on a real home folder, the move costs 1,7× the candidates and
+    /// about 440 Mo to read, and it is the difference between seeing duplicate
+    /// photos and not: most sit between 300 Ko and 3 Mo.
+    static let defaultDuplicateThreshold: Int64 = 500_000
+    static let defaultDuplicateFolderThreshold: Int64 = 100_000_000
 
     /// Queries the user has actually run, most recent first.
     ///
@@ -251,18 +264,18 @@ final class Preferences {
 
     /// Floor of the duplicates view. Deciding how much disk the feature may
     /// read belongs with the other scan-cost options, not in the view itself.
-    var duplicateThreshold: DuplicateThreshold {
+    var duplicateThresholdBytes: Int64 {
         didSet {
-            UserDefaults.standard.set(duplicateThreshold.rawValue,
+            UserDefaults.standard.set(Int(duplicateThresholdBytes),
                                       forKey: Key.duplicateThreshold)
         }
     }
 
     /// Floor of the folder pass of the same view. Higher than the file floor
     /// by default: confirming a folder means reading every file in it.
-    var duplicateFolderThreshold: DuplicateFolderThreshold {
+    var duplicateFolderThresholdBytes: Int64 {
         didSet {
-            UserDefaults.standard.set(duplicateFolderThreshold.rawValue,
+            UserDefaults.standard.set(Int(duplicateFolderThresholdBytes),
                                       forKey: Key.duplicateFolderThreshold)
         }
     }
@@ -303,12 +316,20 @@ final class Preferences {
         largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
             .flatMap(AgeFilter.init(rawValue:)) ?? .all
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
-        duplicateThreshold = DuplicateThreshold(
-            rawValue: defaults.integer(forKey: Key.duplicateThreshold)
-        ) ?? .oneMB
-        duplicateFolderThreshold = DuplicateFolderThreshold(
-            rawValue: defaults.integer(forKey: Key.duplicateFolderThreshold)
-        ) ?? .hundredMB
+        let storedFile = Int64(defaults.integer(forKey: Key.duplicateThreshold))
+        duplicateThresholdBytes = storedFile > 0
+            ? SizeLadder.bytes(
+                at: SizeLadder.index(of: storedFile, in: SizeLadder.file),
+                in: SizeLadder.file)
+            : Self.defaultDuplicateThreshold
+        let storedFolder = Int64(
+            defaults.integer(forKey: Key.duplicateFolderThreshold)
+        )
+        duplicateFolderThresholdBytes = storedFolder > 0
+            ? SizeLadder.bytes(
+                at: SizeLadder.index(of: storedFolder, in: SizeLadder.folder),
+                in: SizeLadder.folder)
+            : Self.defaultDuplicateFolderThreshold
     }
 
     /// Scan options matching the current preferences.
@@ -322,6 +343,7 @@ final class Preferences {
 
 struct SettingsView: View {
     @Bindable private var preferences = Preferences.shared
+    private var estimator = ThresholdEstimate.shared
     @State private var accessGranted = FullDiskAccess.isGranted
 
     var body: some View {
@@ -377,22 +399,21 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker("Doublons — taille minimale", selection: $preferences.duplicateThreshold) {
-                    ForEach(DuplicateThreshold.allCases) { Text($0.label).tag($0) }
-                }
-                Text("Seuls les fichiers d'au moins cette taille sont comparés dans la vue Doublons. Un seuil plus bas en trouve davantage, mais allonge la lecture du disque.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                threshold(
+                    "Doublons — fichiers d'au moins",
+                    bytes: $preferences.duplicateThresholdBytes,
+                    ladder: SizeLadder.file,
+                    help: "Seuls les fichiers d'au moins cette taille sont comparés. Descendre sous 1 Mo est ce qu'il faut faire pour retrouver des photos en double — la plupart pèsent entre 300 Ko et 3 Mo — mais le coût ne baisse pas proportionnellement : les petites tailles se répètent bien plus souvent, et sous 128 Ko chaque fichier est lu en entier au lieu d'être lu partiellement."
+                )
 
-                Picker("Doublons — dossiers d'au moins",
-                       selection: $preferences.duplicateFolderThreshold) {
-                    ForEach(DuplicateFolderThreshold.allCases) {
-                        Text($0.label).tag($0)
-                    }
-                }
-                Text("Les dossiers entièrement identiques sont proposés en tête de la vue Doublons, et les fichiers qu'ils contiennent y sont regroupés. Confirmer un dossier oblige à lire chacun de ses fichiers : un seuil bas peut coûter cher sur un disque de développement.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                threshold(
+                    "Doublons — dossiers d'au moins",
+                    bytes: $preferences.duplicateFolderThresholdBytes,
+                    ladder: SizeLadder.folder,
+                    help: "Les dossiers entièrement identiques sont proposés en tête de la vue Doublons, et les fichiers qu'ils contiennent y sont regroupés. Confirmer un dossier oblige à lire chacun de ses fichiers, quelle que soit sa taille : un seuil bas coûte cher sur un disque de développement."
+                )
+
+                estimate
             }
 
             Section("Autorisations") {
@@ -415,12 +436,115 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
-        .fixedSize(horizontal: false, vertical: true)
+        // Sized rather than fitted. `fixedSize(vertical:)` made the window as
+        // tall as its content, which was fine while the content was short and
+        // ran off the bottom of the screen the moment the two sliders and their
+        // explanations arrived. The grouped Form scrolls on its own; it just
+        // needs to be told it has a bottom.
+        .frame(width: 460, height: 620)
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
             )
         ) { _ in accessGranted = FullDiskAccess.isGranted }
+    }
+
+    // MARK: - A threshold and what it costs
+
+    /// The slider drives an *index* into the ladder, so every position is a
+    /// value someone would actually write down.
+    private func threshold(
+        _ title: String, bytes: Binding<Int64>, ladder: [Int64], help: String
+    ) -> some View {
+        let index = Binding(
+            get: { Double(SizeLadder.index(of: bytes.wrappedValue, in: ladder)) },
+            set: { bytes.wrappedValue = SizeLadder.bytes(at: Int($0), in: ladder) }
+        )
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer(minLength: 12)
+                Text(Format.bytes(bytes.wrappedValue))
+                    .monospacedDigit()
+                    .fontWeight(.medium)
+            }
+            // A bare `Slider`, with the bounds written beside it by hand. Given
+            // a label — even an empty one — a Form reserves its label column
+            // and the track ends up squeezed into the right half of the row.
+            HStack(spacing: 8) {
+                Text(Format.bytes(ladder.first ?? 0))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Slider(value: index, in: 0...Double(ladder.count - 1), step: 1)
+                    // Without this a grouped Form still reserves its label
+                    // column for the control, and the track ends up squeezed
+                    // into the right half of the row with dead space beside it.
+                    .labelsHidden()
+                Text(Format.bytes(ladder.last ?? 0))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(help)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let count = estimator.candidates(above: bytes.wrappedValue),
+               let toRead = estimator.bytesToRead(above: bytes.wrappedValue) {
+                // One walk answered every rung, so this follows the thumb
+                // instead of arriving after the pass has already cost the time.
+                Text("≈ \(Format.count(count)) fichiers à comparer, \(Format.bytes(toRead)) à lire")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.tint)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The census behind the figures above. Off by default and asked for
+    /// explicitly: it walks the whole home folder, and taking minutes of disk
+    /// the moment someone opens Settings would be a poor trade for a number
+    /// they may not have come for.
+    @ViewBuilder
+    private var estimate: some View {
+        switch estimator.phase {
+        case .running(let seen):
+            HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text("Estimation en cours — \(Format.count(seen)) fichiers parcourus")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Annuler") { estimator.cancel() }
+                    .controlSize(.small)
+            }
+        case .ready:
+            HStack(spacing: 9) {
+                Text("Estimation faite sur \(estimator.root) — indicative : la vue Doublons ne compare que le dossier où vous vous trouvez.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button("Recalculer") { estimator.measure() }
+                    .controlSize(.small)
+            }
+        case .failed:
+            HStack(spacing: 9) {
+                Text("Le dossier personnel n'a pas pu être parcouru.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Réessayer") { estimator.measure() }
+                    .controlSize(.small)
+            }
+        case .idle:
+            HStack(spacing: 9) {
+                Text("Une analyse préalable de votre dossier personnel dit combien de fichiers chaque seuil ferait comparer. Elle ne lit aucun contenu, seulement les tailles.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button("Estimer") { estimator.measure() }
+                    .controlSize(.small)
+            }
+        }
     }
 }
