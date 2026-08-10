@@ -341,6 +341,15 @@ final class ScanModel {
     enum CopyIdentity: Hashable {
         case storage(DuplicateFinder.FileID)
         case folder(Int32)
+        /// Several of the above over one set of blocks: APFS clones. Folded
+        /// into a single identity for exactly the reason hard links already
+        /// are — shared blocks are released only when the *last* holder goes,
+        /// so the copies are one physical thing wearing several paths, and
+        /// counting them separately promised their bytes once per path.
+        ///
+        /// Only ever compared within one group, which is what lets the set be
+        /// a plain index.
+        case blocks(Int)
     }
 
     /// One path holding a copy.
@@ -359,6 +368,11 @@ final class ScanModel {
         let relativeFolder: String?
         let modTime: Int32
         let isHardlinked: Bool
+        /// Another card of this group holds the very same blocks: the two are
+        /// one copy on disk, reached by two paths. Badged, and never counted
+        /// twice — the same treatment `isHardlinked` gets, for the same reason
+        /// by a different mechanism.
+        let isClone: Bool
         let isPackage: Bool
         /// Sits in storage something else manages: an application's own
         /// folders (container, caches, Application Support) or a tool's
@@ -382,6 +396,10 @@ final class ScanModel {
         /// Regular files in one copy of a folder group; zero for a file group,
         /// where the count would only ever be one.
         let fileCount: Int
+        /// The copies are APFS clones — different inodes over the same blocks.
+        /// Their space is already shared, so the honest figure is close to
+        /// zero, and the reason for it is worth more than the number.
+        let sharesBlocks: Bool
         /// On-disk cost of one copy — what every copy of the group weighs.
         let eachBytes: Int64
         let reclaimableBytes: Int64
@@ -1707,7 +1725,8 @@ final class ScanModel {
         var hidden = 0
 
         func card(
-            _ node: Int32, identity: CopyIdentity, isHardlinked: Bool
+            _ node: Int32, identity: CopyIdentity,
+            isHardlinked: Bool, isClone: Bool
         ) -> DuplicateCopy {
             let path = store.path(of: node)
             let parent = store.path(of: store.parent[Int(node)])
@@ -1729,6 +1748,7 @@ final class ScanModel {
                 relativeFolder: relative,
                 modTime: store.modTime[Int(node)],
                 isHardlinked: isHardlinked,
+                isClone: isClone,
                 isPackage: store.flags[Int(node)].contains(.package),
                 isManaged: managed.isManaged,
                 managedBy: managed.owner
@@ -1744,20 +1764,30 @@ final class ScanModel {
                     && Self.isOfferable(store.path(of: $0))
             }
             guard live.count >= 2 else { continue }
-            let copies = live.map {
-                card($0, identity: .folder($0), isHardlinked: false)
-            }
+            // A clone takes the identity of its block set, so two cloned
+            // folders count as one copy and « Conservée » keeps both.
+            let copies = Self.grouped(live.map { node in
+                card(
+                    node,
+                    identity: group.blockGroup[node].map(CopyIdentity.blocks)
+                        ?? .folder(node),
+                    isHardlinked: false,
+                    isClone: group.blockGroup[node] != nil
+                )
+            })
             if !duplicatesShowManaged, copies.count(where: { !$0.isManaged }) < 2 {
                 hidden += 1
                 continue
             }
             // Recomputed over the copies still standing: a trashed or filtered
-            // copy takes its contribution with it.
-            let freeable = live.map { group.freeableBytes[$0] ?? 0 }
+            // copy takes its contribution with it. Keyed by identity, so a set
+            // of clones lands once and is worth one copy — assigning twice to
+            // the same key is the fold.
             var byIdentity: [CopyIdentity: Int64] = [:]
-            for (node, bytes) in zip(live, freeable) {
-                byIdentity[.folder(node)] = bytes
+            for copy in copies {
+                byIdentity[copy.identity] = group.freeableBytes[copy.id] ?? 0
             }
+            let freeable = Array(byIdentity.values)
             let names = Set(copies.map(\.name))
             folderCandidates.append((
                 DuplicateGroupDisplay(
@@ -1766,6 +1796,7 @@ final class ScanModel {
                     isFolder: true,
                     copyCount: copies.count,
                     fileCount: group.fileCount,
+                    sharesBlocks: group.sharesBlocks,
                     eachBytes: group.bytesEach,
                     reclaimableBytes:
                         freeable.reduce(0, +) - (freeable.max() ?? 0),
@@ -1819,17 +1850,30 @@ final class ScanModel {
 
             var copies: [DuplicateCopy] = []
             var freeable: [CopyIdentity: Int64] = [:]
+
             for storage in storages {
                 if storage.nodes.count == storage.linkCount {
-                    freeable[.storage(storage.fileID)] = storage.allocated
+                    let identity: CopyIdentity = storage.sharedExtent
+                        .map { .blocks(Int(truncatingIfNeeded: $0)) }
+                        ?? .storage(storage.fileID)
+                    // Clones collapse onto one key, so their bytes are counted
+                    // once however many paths hold them.
+                    freeable[identity] = storage.allocated
                 }
                 for node in storage.nodes {
                     copies.append(card(
-                        node, identity: .storage(storage.fileID),
-                        isHardlinked: storage.linkCount > 1
+                        node,
+                        // The device offset is already the partition: two
+                        // storages starting at the same one are the same bytes.
+                        identity: storage.sharedExtent
+                            .map { .blocks(Int(truncatingIfNeeded: $0)) }
+                            ?? .storage(storage.fileID),
+                        isHardlinked: storage.linkCount > 1,
+                        isClone: storage.sharesBlocks
                     ))
                 }
             }
+            copies = Self.grouped(copies)
             // A "duplicate" that only exists because an app or a build tool
             // squirrelled a copy away is hidden unless asked for: two *user*
             // storages make a real duplicate, one user file plus a clipboard
@@ -1848,6 +1892,7 @@ final class ScanModel {
                 isFolder: false,
                 copyCount: copies.count,
                 fileCount: 0,
+                sharesBlocks: storages.contains(where: \.sharesBlocks),
                 eachBytes: storages.first?.allocated ?? 0,
                 reclaimableBytes: DuplicateFinder.reclaimableBytes(of: storages),
                 copies: copies,
@@ -1898,6 +1943,32 @@ final class ScanModel {
     private static func isOfferable(_ path: String) -> Bool {
         if case .forbidden = DenyList.verdict(for: path) { return false }
         return true
+    }
+
+    /// Cards of one copy, side by side.
+    ///
+    /// Paths sharing an inode were already adjacent by construction — they come
+    /// out of a single `Storage`. Clones are not: they are separate storages
+    /// folded into one identity afterwards, so the keeper ordering happily
+    /// drops an unrelated copy between them, and two cards that are one thing
+    /// on disk end up reading as strangers. That is precisely what the badge
+    /// exists to deny.
+    ///
+    /// Identities keep the order they first appear in, so this only ever pulls
+    /// cards together — the best copy stays first, and with it the default
+    /// « Conservée ». The original position breaks ties, so the result does not
+    /// depend on the sort being stable.
+    private static func grouped(_ copies: [DuplicateCopy]) -> [DuplicateCopy] {
+        var rank: [CopyIdentity: Int] = [:]
+        for copy in copies where rank[copy.identity] == nil {
+            rank[copy.identity] = rank.count
+        }
+        return copies.enumerated()
+            .sorted {
+                (rank[$0.element.identity] ?? 0, $0.offset)
+                    < (rank[$1.element.identity] ?? 0, $1.offset)
+            }
+            .map(\.element)
     }
 
     /// Domain byte in front of every group id. Both kinds of group key their
@@ -2001,6 +2072,16 @@ final class ScanModel {
         return nil
     }
 
+    /// Copies of this group whose deletion would actually return bytes.
+    ///
+    /// Identity is the whole answer now: a clone of the kept copy *is* the kept
+    /// copy as far as the disk is concerned, so it never appears here — the
+    /// same way a second hard link to the kept inode never did.
+    func removableCopies(of group: DuplicateGroupDisplay) -> [DuplicateCopy] {
+        guard let keeper = duplicateKeeper(for: group) else { return [] }
+        return group.copies.filter { $0.identity != keeper }
+    }
+
     func setDuplicateKeeper(_ identity: CopyIdentity, for groupID: [UInt8]) {
         duplicateKeepers[groupID] = identity
     }
@@ -2017,8 +2098,15 @@ final class ScanModel {
         }
     }
 
+    /// Only groups that would actually return something. A group whose copies
+    /// all share their blocks has nothing to give, and putting it in the
+    /// basket would pad the count with a promise of zero.
     func markAllDuplicateGroups() {
-        duplicateMarked = Set(duplicateDisplay.map(\.id))
+        duplicateMarked = Set(
+            duplicateDisplay
+                .filter { !removableCopies(of: $0).isEmpty }
+                .map(\.id)
+        )
     }
 
     func unmarkAllDuplicateGroups() {
@@ -2034,7 +2122,7 @@ final class ScanModel {
         var bytes: Int64 = 0
         for group in duplicateDisplay where duplicateMarked.contains(group.id) {
             guard let keeper = duplicateKeeper(for: group) else { continue }
-            copies += group.copies.count { $0.identity != keeper }
+            copies += removableCopies(of: group).count
             bytes += group.freedBytes(keeping: keeper)
         }
         return (duplicateMarked.count, copies, bytes)
@@ -2045,10 +2133,7 @@ final class ScanModel {
     func requestMarkedDuplicatesDeletion() {
         var doomed: Set<Int32> = []
         for group in duplicateDisplay where duplicateMarked.contains(group.id) {
-            guard let keeper = duplicateKeeper(for: group) else { continue }
-            for copy in group.copies where copy.identity != keeper {
-                doomed.insert(copy.id)
-            }
+            for copy in removableCopies(of: group) { doomed.insert(copy.id) }
         }
         guard !doomed.isEmpty else { return }
         selection = doomed

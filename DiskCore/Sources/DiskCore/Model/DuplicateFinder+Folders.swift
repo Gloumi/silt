@@ -19,10 +19,39 @@ public struct FolderGroup: Sendable {
     public var bytesEach: Int64
     /// Regular files in one copy.
     public var fileCount: Int
-    /// Per copy, the bytes deleting *that* copy would actually return.
+    /// Per copy, the bytes it holds that no link outside the folder keeps
+    /// alive — what deleting its whole block set would return.
+    ///
+    /// Cross-copy sharing is deliberately *not* subtracted here: blocks shared
+    /// between two copies are freed when the last of the two goes, so charging
+    /// zero to each of them individually loses the fact that deleting both
+    /// returns a copy's worth. `blockGroup` says which copies to fold together;
+    /// this says what a fold is worth.
     public var freeableBytes: [Int32: Int64]
     /// Upper bound on what deleting every copy but one would free.
     public var reclaimableBytes: Int64
+    /// Per copy, the bytes it holds that physically live in another copy of
+    /// this group too — different inodes over the same blocks, which is what
+    /// `⌘D` in the Finder makes and the ordinary way of duplicating a folder
+    /// on a Mac.
+    ///
+    /// Per copy and not per group because the two are different statements:
+    /// the group needs to know whether to hedge, and the card needs to know
+    /// whether to wear a badge. Sharing is also symmetric — the filesystem has
+    /// no notion of which one was the original — so every copy involved is
+    /// marked, not all but one.
+    public var sharedBytes: [Int32: Int64]
+
+    /// Copies carrying the same value hold the very same blocks, all the way
+    /// down; absent means this copy's bytes are its own.
+    ///
+    /// A partition and not a flag, for the same reason a file group keeps the
+    /// offset rather than a boolean: what decides whether deleting a copy
+    /// frees anything is whether the copy being *kept* holds those blocks.
+    public var blockGroup: [Int32: Int]
+
+    /// True when any copy shares anything.
+    public var sharesBlocks: Bool { sharedBytes.values.contains { $0 > 0 } }
 }
 
 extension DuplicateFinder {
@@ -154,7 +183,10 @@ extension DuplicateFinder {
             dropped += split.dropped
             for (confirmed, digest) in zip(split.buckets, split.digests) {
                 groups.append(assemble(
-                    confirmed, digest: digest, in: manifest, store: store
+                    confirmed, digest: digest, in: manifest, store: store,
+                    extents: prefixPass.extents.merging(fullPass.extents) {
+                        _, latest in latest
+                    }
                 ))
             }
         }
@@ -315,12 +347,53 @@ extension DuplicateFinder {
 
     private static func assemble(
         _ sites: [Site], digest: [UInt8],
-        in manifest: FolderManifest, store: NodeStore
+        in manifest: FolderManifest, store: NodeStore,
+        extents: [FileID: Int64]
     ) -> FolderGroup {
         var freeable: [Int32: Int64] = [:]
         var totals: [Int64] = []
         var fileCount = 0
 
+        // The copies were confirmed identical entry by entry, so one ordered
+        // walk of each lines them up file for file. Two files at the same
+        // position sitting at the same device offset are clones: the bytes are
+        // already shared and deleting either returns nothing.
+        let ordered = sites.map { orderedFiles($0.listing, in: manifest) }
+
+        // Copies whose files sit on exactly the same offsets, position for
+        // position, are clones of one another wholesale — which is what `⌘D`
+        // produces. A copy the measurement could not answer for completely
+        // joins no group: saying nothing beats saying something unfounded.
+        var blockGroup: [Int32: Int] = [:]
+        var byExtentSequence: [[Int64]: [Int32]] = [:]
+        for (site, files) in zip(sites, ordered) {
+            let sequence = files.compactMap { extents[$0.fileID] }
+            guard !sequence.isEmpty, sequence.count == files.count else { continue }
+            byExtentSequence[sequence, default: []].append(site.node)
+        }
+        var nextGroup = 0
+        for (_, nodes) in byExtentSequence where nodes.count > 1 {
+            for node in nodes { blockGroup[node] = nextGroup }
+            nextGroup += 1
+        }
+
+        var shared: Set<FileID> = []
+        if let width = ordered.first?.count,
+           ordered.allSatisfy({ $0.count == width }) {
+            for position in 0..<width {
+                var byExtent: [Int64: [FileID]] = [:]
+                for copy in ordered {
+                    let entry = copy[position]
+                    guard let extent = extents[entry.fileID] else { continue }
+                    byExtent[extent, default: []].append(entry.fileID)
+                }
+                for (_, ids) in byExtent where ids.count > 1 {
+                    shared.formUnion(ids)
+                }
+            }
+        }
+
+        var sharedBytes: [Int32: Int64] = [:]
         for site in sites {
             // Deduplicated by inode: two names for one file inside the folder
             // cost its bytes once, and the whole point of the exercise is not
@@ -344,6 +417,9 @@ extension DuplicateFinder {
                 }
             }
             directoryBytes += manifest.listing(site.listing)?.allocated ?? 0
+            sharedBytes[site.node] = storages.reduce(Int64(0)) { sum, entry in
+                shared.contains(entry.key) ? sum + entry.value.allocated : sum
+            }
 
             let total = storages.values.reduce(directoryBytes) { $0 + $1.allocated }
             // Bytes that survive the deletion contribute nothing. A storage
@@ -351,15 +427,15 @@ extension DuplicateFinder {
             // somewhere else — including, and this is the common case, from
             // the very copy the user is keeping: two folders sharing an inode
             // free four kilobytes between them, not twelve gigabytes.
-            let free = storages.values.reduce(directoryBytes) { sum, storage in
-                storage.here == storage.links ? sum + storage.allocated : sum
+            let free = storages.reduce(directoryBytes) { sum, entry in
+                entry.value.here == entry.value.links
+                    ? sum + entry.value.allocated : sum
             }
             freeable[site.node] = free
             totals.append(total)
             fileCount = max(fileCount, files)
         }
 
-        let free = sites.map { freeable[$0.node] ?? 0 }
         let folders = sites.map(\.node).sorted {
             keeperRank(of: $0, in: store) < keeperRank(of: $1, in: store)
         }
@@ -371,8 +447,57 @@ extension DuplicateFinder {
             freeableBytes: freeable,
             // One copy stays, and the one that frees the most is the one worth
             // keeping for free.
-            reclaimableBytes: free.reduce(0, +) - (free.max() ?? 0)
+            reclaimableBytes: Self.reclaimable(
+                of: sites, freeable: freeable, blockGroup: blockGroup
+            ),
+            sharedBytes: sharedBytes,
+            blockGroup: blockGroup
         )
+    }
+
+    /// What deleting every copy but one would free, counting each set of
+    /// blocks once however many copies point at it.
+    private static func reclaimable(
+        of sites: [Site], freeable: [Int32: Int64], blockGroup: [Int32: Int]
+    ) -> Int64 {
+        var byBlocks: [Int: Int64] = [:]
+        var unique: [Int64] = []
+        for site in sites {
+            let bytes = freeable[site.node] ?? 0
+            if let set = blockGroup[site.node] {
+                byBlocks[set] = bytes
+            } else {
+                unique.append(bytes)
+            }
+        }
+        let sets = Array(byBlocks.values) + unique
+        // One set stays behind whichever copy is kept, and the largest staying
+        // is the conservative reading.
+        return sets.reduce(0, +) - (sets.max() ?? 0)
+    }
+
+    /// Every regular file below a listing, in an order two identical copies are
+    /// guaranteed to agree on: entries are already sorted by name, and
+    /// directories are pushed in reverse so they come back off the stack in
+    /// that same order. Structure was confirmed identical before this runs, so
+    /// position *is* identity and no path strings have to be built to pair
+    /// two copies up.
+    private static func orderedFiles(
+        _ listing: Int, in manifest: FolderManifest
+    ) -> [FolderManifest.Entry] {
+        var result: [FolderManifest.Entry] = []
+        var stack = [listing]
+        while let index = stack.popLast() {
+            guard let current = manifest.listing(index) else { continue }
+            for entry in current.entries where entry.kind == .file {
+                result.append(entry)
+            }
+            for entry in current.entries.reversed()
+            where entry.kind == .directory {
+                stack.append(entry.listing)
+            }
+        }
+        return result
     }
 }
 

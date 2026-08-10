@@ -190,6 +190,62 @@ struct DuplicatesView: View {
         }
     }
 
+    /// What this group would actually free, for the copy actually being kept.
+    ///
+    /// `reclaimableBytes` answers a different question — the best case, over
+    /// whichever copy would be cheapest to keep — and using it here put "rien
+    /// à libérer" next to a button offering 6,3 Mo.
+    private func actualGain(_ group: ScanModel.DuplicateGroupDisplay) -> Int64 {
+        guard let keeper = model.duplicateKeeper(for: group) else {
+            return group.reclaimableBytes
+        }
+        return group.freedBytes(keeping: keeper)
+    }
+
+    /// Says "already shared" rather than showing a zero nobody can interpret.
+    private func rowSubtitle(_ group: ScanModel.DuplicateGroupDisplay) -> String {
+        let kind = group.isFolder ? "dossiers" : "copies"
+        let each = Format.bytes(group.eachBytes)
+        let gain = actualGain(group)
+        if gain == 0 {
+            return "\(Format.count(group.copyCount)) \(kind) · \(each) · rien à libérer"
+        }
+        return "\(Format.count(group.copyCount)) \(kind) · \(each) · \(Format.bytes(gain)) récupérables"
+    }
+
+    private func detailSubtitle(_ group: ScanModel.DuplicateGroupDisplay) -> String {
+        var parts = [
+            group.isFolder
+                ? "\(Format.count(group.copyCount)) dossiers · \(Format.bytes(group.eachBytes)) chacun"
+                : "\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) chacune",
+        ]
+        if group.isFolder {
+            parts.append(group.fileCount == 1
+                         ? "1 fichier"
+                         : "\(Format.count(group.fileCount)) fichiers")
+        }
+        // Three different things to say, and saying the wrong one is how the
+        // header ends up contradicting the button beside it. Sharing that
+        // swallows the whole gain is not sharing that swallows part of it, and
+        // neither is the ordinary case where the clone check found nothing and
+        // the old caveat still stands.
+        //
+        // Phrased as a consequence rather than as a mechanism: "clones APFS"
+        // names the cause and leaves the reader to work out that there is
+        // nothing to gain, which is the part they came for. The badge on each
+        // card carries the mechanism.
+        if actualGain(group) == 0 {
+            parts.append("rien à libérer : une seule copie sur le disque")
+        } else if group.sharesBlocks {
+            // The figure beside it already counts a set of clones once; this
+            // only explains why the cards outnumber the copies.
+            parts.append("les cartes « clone » comptent pour une seule copie")
+        } else {
+            parts.append("estimation haute")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func focusedGroup(
         in groups: [ScanModel.DuplicateGroupDisplay]
     ) -> ScanModel.DuplicateGroupDisplay? {
@@ -329,9 +385,7 @@ struct DuplicatesView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    Text(group.isFolder
-                         ? "\(Format.count(group.copyCount)) dossiers · \(Format.bytes(group.eachBytes)) · \(Format.bytes(group.reclaimableBytes)) récupérables"
-                         : "\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) · \(Format.bytes(group.reclaimableBytes)) récupérables")
+                    Text(rowSubtitle(group))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -417,6 +471,7 @@ struct DuplicatesView: View {
                                 model: model,
                                 copy: copy,
                                 isKept: copy.identity == keeper,
+
                                 isSelected: model.selection.contains(copy.id),
                                 onSelect: {
                                     model.selection = [copy.id]
@@ -510,7 +565,10 @@ struct DuplicatesView: View {
         keeper: ScanModel.CopyIdentity?,
         groups: [ScanModel.DuplicateGroupDisplay]
     ) -> some View {
-        let others = group.copies.count { $0.identity != keeper }
+        // Only the copies worth trashing: a clone of the kept one would go to
+        // the Trash and return not a byte.
+        let removable = model.removableCopies(of: group)
+        let others = removable.count
         let freed = keeper.map { group.freedBytes(keeping: $0) } ?? 0
         let isMarked = model.isDuplicateMarked(group.id)
 
@@ -520,17 +578,21 @@ struct DuplicatesView: View {
                     .fontWeight(.semibold)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(group.isFolder
-                     ? "\(Format.count(group.copyCount)) dossiers · \(Format.bytes(group.eachBytes)) chacun · \(Format.count(group.fileCount)) fichiers · estimation haute"
-                     : "\(Format.count(group.copyCount)) copies · \(Format.bytes(group.eachBytes)) chacune")
+                Text(detailSubtitle(group))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help(group.isFolder
-                          ? "Dupliquer un dossier dans le Finder (⌘D) crée des clones APFS, qui partagent leur espace sans que rien ne le signale : le gain annoncé est un maximum, souvent supérieur à ce qui sera réellement libéré."
-                          : "")
+                    .foregroundStyle(
+                        actualGain(group) == 0 ? .orange : .secondary
+                    )
+                    .help(group.sharesBlocks
+                          ? "Mesuré, pas estimé : certaines de ces copies occupent les mêmes blocs physiques. C'est ce que fait ⌘D dans le Finder — un clone APFS, avec son propre inode et les mêmes octets. Le gain annoncé ne compte que les copies qui ont réellement les leurs."
+                          : "Les clones APFS partagent leur espace sans que rien ne le signale ; le gain annoncé reste un maximum.")
             }
             Spacer()
-            if isMarked {
+            if others == 0 {
+                // Nothing to offer, so nothing is offered. The subtitle above
+                // has already said why.
+                EmptyView()
+            } else if isMarked {
                 Button("Ne plus marquer") {
                     model.toggleDuplicateMark(group.id)
                 }
@@ -611,6 +673,18 @@ private struct CopyCard: View {
                             .background(.quaternary, in: .capsule)
                             .foregroundStyle(.secondary)
                             .help("Ces chemins partagent le même espace disque : en supprimer un ne libère rien.")
+                    }
+                    // The twin of the badge above it: same statement — these
+                    // paths are one copy on disk — reached by a mechanism
+                    // nothing in an inode or a link count reveals.
+                    if copy.isClone {
+                        Text("clone")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: .capsule)
+                            .foregroundStyle(.orange)
+                            .help("Cette carte et une autre du groupe occupent exactement les mêmes blocs : c'est une seule copie sur le disque, atteinte par deux chemins. Silt les compte donc pour une, et « Conservée » les garde ou les supprime ensemble. C'est ce que produit ⌘D dans le Finder — mesuré sur le disque, pas déduit.")
                     }
                     if copy.isManaged {
                         Text(copy.managedBy.map {

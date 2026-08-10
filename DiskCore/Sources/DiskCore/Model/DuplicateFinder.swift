@@ -57,6 +57,16 @@ public enum DuplicateFinder {
         /// On-disk bytes, taken from the store rather than re-measured so the
         /// figure matches what every other view shows for the same file.
         public var allocated: Int64
+        /// Device offset shared with at least one other storage in this
+        /// group, or nil when these bytes are this copy's own.
+        ///
+        /// The value and not just a flag, because "shares with something" is
+        /// not the question anyone is asking. What matters is *which* copies
+        /// share with *which*: deleting a copy frees nothing only when the one
+        /// being kept holds the same blocks.
+        public var sharedExtent: Int64?
+
+        public var sharesBlocks: Bool { sharedExtent != nil }
     }
 
     /// Files whose content hashed identical. Always at least two storages.
@@ -225,7 +235,10 @@ public enum DuplicateFinder {
             }
             for (digest, matching) in byDigest where matching.count >= 2 {
                 if size <= Int64(options.prefixLength) {
-                    groups.append(assemble(matching, digest: digest, in: store))
+                    groups.append(assemble(
+                        matching, digest: digest, in: store,
+                        extents: prefixPass.extents
+                    ))
                 } else {
                     fullJobs.append(matching)
                 }
@@ -248,7 +261,10 @@ public enum DuplicateFinder {
                 byDigest[digest, default: []].append(draft)
             }
             for (digest, matching) in byDigest where matching.count >= 2 {
-                groups.append(assemble(matching, digest: digest, in: store))
+                groups.append(assemble(
+                    matching, digest: digest, in: store,
+                    extents: fullPass.extents
+                ))
             }
         }
 
@@ -379,6 +395,10 @@ public enum DuplicateFinder {
 
     struct HashPass {
         var digests: [FileID: [UInt8]]
+        /// Device offset of each file's first extent, when the filesystem
+        /// would say. Free to collect: the hasher already holds the
+        /// descriptor, so this costs one `fcntl` and reads nothing.
+        var extents: [FileID: Int64]
         var bytesRead: Int64
         var dropped: Int
     }
@@ -405,26 +425,35 @@ public enum DuplicateFinder {
 
         private struct Entry {
             var digest: [UInt8]
+            var extent: Int64?
             var size: Int64
             var modTime: Int64
         }
 
         private let entries = Mutex<[Key: Entry]>([:])
 
-        func digest(for key: Key, size: Int64, modTime: Int64) -> [UInt8]? {
+        /// The extent rides along with the digest: a cache hit skips the open,
+        /// and without it the second pass would lose the one measurement that
+        /// tells a clone from a copy.
+        func digest(
+            for key: Key, size: Int64, modTime: Int64
+        ) -> (digest: [UInt8], extent: Int64?)? {
             entries.withLock { stored in
                 guard let entry = stored[key], entry.size == size,
                       entry.modTime == modTime
                 else { return nil }
-                return entry.digest
+                return (entry.digest, entry.extent)
             }
         }
 
         func store(
-            _ digest: [UInt8], for key: Key, size: Int64, modTime: Int64
+            _ digest: [UInt8], extent: Int64?, for key: Key,
+            size: Int64, modTime: Int64
         ) {
             entries.withLock {
-                $0[key] = Entry(digest: digest, size: size, modTime: modTime)
+                $0[key] = Entry(
+                    digest: digest, extent: extent, size: size, modTime: modTime
+                )
             }
         }
     }
@@ -442,6 +471,7 @@ public enum DuplicateFinder {
             var filesHashed = 0
             var dropped = 0
             var digests: [FileID: [UInt8]] = [:]
+            var extents: [FileID: Int64] = [:]
             var lastReport: ContinuousClock.Instant
         }
         let inner: Mutex<Inner>
@@ -457,7 +487,7 @@ public enum DuplicateFinder {
         onProgress: (@Sendable (Progress) -> Void)?
     ) async -> HashPass? {
         guard !jobs.isEmpty else {
-            return HashPass(digests: [:], bytesRead: 0, dropped: 0)
+            return HashPass(digests: [:], extents: [:], bytesRead: 0, dropped: 0)
         }
         let bytesToHash = jobs.reduce(Int64(0)) { sum, job in
             sum + (limit.map { min(job.size, Int64($0)) } ?? job.size)
@@ -483,6 +513,7 @@ public enum DuplicateFinder {
         return state.inner.withLock {
             HashPass(
                 digests: $0.digests,
+                extents: $0.extents,
                 bytesRead: $0.bytesHashed - $0.bytesFromCache,
                 dropped: $0.dropped
             )
@@ -512,7 +543,10 @@ public enum DuplicateFinder {
             if let known = cache?.digest(
                 for: key, size: job.size, modTime: job.modTime
             ) {
-                state.inner.withLock { $0.digests[job.fileID] = known }
+                state.inner.withLock {
+                    $0.digests[job.fileID] = known.digest
+                    if let extent = known.extent { $0.extents[job.fileID] = extent }
+                }
                 report(state: state, stage: stage, bytesToHash: bytesToHash,
                        jobCount: jobs.count, read: expected, cached: true,
                        finished: true, dropped: false, onProgress: onProgress)
@@ -544,6 +578,21 @@ public enum DuplicateFinder {
                        finished: true, dropped: true, onProgress: onProgress)
                 continue
             }
+            // Where the first block physically lives. Two files at the same
+            // device offset are APFS clones: separate inodes, one link each,
+            // and the same bytes on the platter. Nothing in `stat` can tell
+            // them from real copies, which is why every reclaim figure was an
+            // over-estimate until this line. Failure is fine — the file is
+            // then treated as unshared, which is what was assumed before.
+            var extent = log2phys()
+            extent.l2p_devoffset = 0
+            extent.l2p_contigbytes = 0
+            let physical: Int64? = fcntl(fd, F_LOG2PHYS_EXT, &extent) == 0
+                ? Int64(extent.l2p_devoffset) : nil
+            if let physical {
+                state.inner.withLock { $0.extents[job.fileID] = physical }
+            }
+
             // Streaming gigabytes through the page cache would evict what the
             // user is actually working with, for pages we will read once.
             _ = fcntl(fd, F_NOCACHE, 1)
@@ -581,7 +630,10 @@ public enum DuplicateFinder {
             }
             let digest = Array(hasher.finalize())
             state.inner.withLock { $0.digests[job.fileID] = digest }
-            cache?.store(digest, for: key, size: job.size, modTime: job.modTime)
+            cache?.store(
+                digest, extent: physical, for: key,
+                size: job.size, modTime: job.modTime
+            )
             report(state: state, stage: stage, bytesToHash: bytesToHash,
                    jobCount: jobs.count, read: 0, cached: false,
                    finished: true, dropped: false, onProgress: onProgress)
@@ -623,8 +675,19 @@ public enum DuplicateFinder {
     // MARK: - Assembly
 
     private static func assemble(
-        _ drafts: [Draft], digest: [UInt8], in store: NodeStore
+        _ drafts: [Draft], digest: [UInt8], in store: NodeStore,
+        extents: [FileID: Int64]
     ) -> Group {
+        // Two of these files starting at the same device offset are clones of
+        // one another. `⌘D` in the Finder makes one, and nothing short of this
+        // measurement tells it from a copy — so without it the group promises
+        // bytes that deleting can never return.
+        var occupants: [Int64: Int] = [:]
+        for draft in drafts {
+            if let extent = extents[draft.fileID] {
+                occupants[extent, default: 0] += 1
+            }
+        }
         var storages = drafts.map { draft in
             Storage(
                 fileID: draft.fileID,
@@ -632,7 +695,9 @@ public enum DuplicateFinder {
                     keeperRank(of: $0, in: store) < keeperRank(of: $1, in: store)
                 },
                 linkCount: draft.linkCount,
-                allocated: draft.allocated
+                allocated: draft.allocated,
+                sharedExtent: extents[draft.fileID]
+                    .flatMap { (occupants[$0] ?? 0) > 1 ? $0 : nil }
             )
         }
         // The first node of each storage is already its own best, so ranking
@@ -662,13 +727,30 @@ public enum DuplicateFinder {
     /// deletable. Public because the app re-runs it after hiding copies the
     /// user has already trashed — filtering a list must not mean rehashing.
     public static func reclaimableBytes(of storages: [Storage]) -> Int64 {
+        // A storage reachable through a link outside the listed paths survives
+        // the deletion regardless, so it can never be freed from here.
         let inScope = storages.filter { $0.nodes.count == $0.linkCount }
-        if inScope.count == storages.count {
-            let total = storages.reduce(Int64(0)) { $0 + $1.allocated }
-            let largest = storages.map(\.allocated).max() ?? 0
-            return total - largest
+
+        // Clones fold together, the way hard links already fold into a single
+        // storage. Shared blocks are released only when the *last* holder goes,
+        // so a set of clones is one copy's worth of bytes however many paths
+        // point at it — and counting them one by one was what made "keep the
+        // odd copy out" report zero when it frees a whole copy.
+        var byBlocks: [Int64: Int64] = [:]
+        var unique: [Int64] = []
+        for storage in inScope {
+            if let extent = storage.sharedExtent {
+                byBlocks[extent] = storage.allocated
+            } else {
+                unique.append(storage.allocated)
+            }
         }
-        return inScope.reduce(Int64(0)) { $0 + $1.allocated }
+        let sets = Array(byBlocks.values) + unique
+
+        if inScope.count == storages.count {
+            return sets.reduce(0, +) - (sets.max() ?? 0)
+        }
+        return sets.reduce(0, +)
     }
 
     /// Which copy is the obvious one to keep: newest first, then the path

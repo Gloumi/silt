@@ -33,6 +33,24 @@ extension Fixture {
         try file("C/x.bin", content: filler(1, count: 300))
     }
 
+    /// An APFS clone, which is what `⌘D` in the Finder makes: a fresh inode
+    /// with one link, over the very same blocks. Indistinguishable from a real
+    /// copy by inode, link count or `du` — only the extent map tells them
+    /// apart.
+    func clone(_ target: String, to relative: String) throws {
+        let from = root.appendingPathComponent(target)
+        let to = root.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(
+            at: to.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let result = from.withUnsafeFileSystemRepresentation { source in
+            to.withUnsafeFileSystemRepresentation { destination in
+                clonefile(source!, destination!, 0)
+            }
+        }
+        try #require(result == 0, "clonefile a échoué (errno \(errno))")
+    }
+
     /// A named pipe. Opening one with no writer blocks inside the kernel, which
     /// is the whole reason the manifest records it and never touches it.
     func fifo(_ relative: String) throws {
@@ -501,9 +519,13 @@ struct DigestCacheTests {
         let cache = DuplicateFinder.DigestCache()
         let id = DuplicateFinder.FileID(device: 1, inode: 42)
         let key = DuplicateFinder.DigestCache.Key(fileID: id, limit: -1)
-        cache.store([1, 2, 3], for: key, size: 100, modTime: 1_000)
+        cache.store([1, 2, 3], extent: 4_096, for: key, size: 100, modTime: 1_000)
 
-        #expect(cache.digest(for: key, size: 100, modTime: 1_000) == [1, 2, 3])
+        let hit = cache.digest(for: key, size: 100, modTime: 1_000)
+        #expect(hit?.digest == [1, 2, 3])
+        // The extent rides along, or a cache hit would lose the one
+        // measurement that tells a clone from a copy.
+        #expect(hit?.extent == 4_096)
         // An inode is reused the moment a file is deleted, and a rewrite in
         // place keeps both the inode and the size.
         #expect(cache.digest(for: key, size: 100, modTime: 1_001) == nil)
@@ -709,5 +731,151 @@ struct DatalessTests {
         // downloading, and the copy weighs nothing here anyway.
         #expect(!names.contains(["Photos", "Photos copie"]))
         #expect(!names.contains(["raw"]))
+    }
+}
+
+@Suite("Blocks that are already shared")
+struct ClonedStorageTests {
+
+    private var options: DuplicateFinder.Options {
+        var options = DuplicateFinder.Options()
+        options.minimumSize = 100
+        options.folderMinimumSize = 100
+        options.prefixLength = 16
+        return options
+    }
+
+    @Test("Two clones of one file promise nothing, two real copies promise one")
+    func clonesFreeNothing() async throws {
+        let cloned = try Fixture()
+        try cloned.file("original.bin", content: filler(40, count: 40_000))
+        try cloned.clone("original.bin", to: "duplicate.bin")
+
+        let scan = await ScanEngine.scan(root: cloned.path)
+        let result = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+        // Found, because they *are* identical — and worth nothing, because the
+        // bytes are one set of blocks wearing two inodes.
+        let group = try #require(result.groups.first)
+        #expect(group.storages.count == 2)
+        #expect(group.storages.allSatisfy { $0.sharesBlocks })
+        #expect(group.reclaimableBytes == 0)
+
+        // The control: same content, written twice, genuinely twice the space.
+        let copied = try Fixture()
+        try copied.file("one.bin", content: filler(40, count: 40_000))
+        try copied.file("two.bin", content: filler(40, count: 40_000))
+        let plain = try #require(await DuplicateFinder.find(
+            in: await ScanEngine.scan(root: copied.path).store,
+            under: 0, options: options
+        ))
+        let honest = try #require(plain.groups.first)
+        #expect(honest.storages.allSatisfy { !$0.sharesBlocks })
+        #expect(honest.reclaimableBytes > 0)
+    }
+
+    @Test("A clone beside a real copy frees the copy, and only the copy")
+    func partialSharing() async throws {
+        let fixture = try Fixture()
+        // The mix the header used to describe wrongly: two files sharing their
+        // blocks and a third that genuinely has its own.
+        try fixture.file("orig.bin", content: filler(45, count: 40_000))
+        try fixture.clone("orig.bin", to: "clone.bin")
+        try fixture.file("copy.bin", content: filler(45, count: 40_000))
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        let result = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+        let group = try #require(result.groups.first)
+        #expect(group.storages.count == 3)
+        // Two of them share, one does not — and the gain is exactly the one
+        // that does not, never zero and never two copies' worth.
+        #expect(group.storages.count { $0.sharesBlocks } == 2)
+        // The two that share name the same offset, so the view can tell
+        // "shares with the copy being kept" from "shares with some other one".
+        let shared = group.storages.compactMap(\.sharedExtent)
+        #expect(Set(shared).count == 1)
+        let alone = try #require(group.storages.first { !$0.sharesBlocks })
+        #expect(group.reclaimableBytes == alone.allocated)
+    }
+
+    @Test("A folder duplicated with ⌘D reports what it really frees: nothing")
+    func clonedFolderFreesNothing() async throws {
+        let fixture = try Fixture()
+        try fixture.file("Photos/a.bin", content: filler(41, count: 4_000))
+        try fixture.file("Photos/b.bin", content: filler(42, count: 6_000))
+        try fixture.directory("Photos copie")
+        // What the Finder does to a folder: every file cloned, none copied.
+        for name in ["a.bin", "b.bin"] {
+            try fixture.clone("Photos/\(name)", to: "Photos copie/\(name)")
+        }
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        let result = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+        let group = try #require(result.folderGroups.first {
+            Set($0.folders.map(scan.store.name(of:))) == ["Photos", "Photos copie"]
+        })
+        #expect(group.sharesBlocks)
+        // Both land in the same sharing set. Which of the two then wears a
+        // badge is the view's call and depends on which one is being kept —
+        // the engine only says who holds the same blocks as whom.
+        let sets = group.folders.map { group.blockGroup[$0] }
+        #expect(sets.allSatisfy { $0 != nil })
+        #expect(Set(sets.compactMap { $0 }).count == 1)
+        // Only the directory's own blocks are real, and they are kilobytes.
+        #expect(group.reclaimableBytes < 100_000)
+        #expect(group.bytesEach >= 10_000)
+    }
+
+    @Test("Two clones plus a real copy free one copy, whichever is kept")
+    func cloneSetCountsOnce() async throws {
+        let fixture = try Fixture()
+        try fixture.file("Dossier/a.bin", content: filler(46, count: 40_000))
+        try fixture.directory("Dossier clone")
+        try fixture.clone("Dossier/a.bin", to: "Dossier clone/a.bin")
+        try fixture.file("Dossier copie/a.bin", content: filler(46, count: 40_000))
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        let result = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+        let group = try #require(result.folderGroups.first {
+            $0.folders.count == 3
+        })
+        let clones = group.folders.filter { group.blockGroup[$0] != nil }
+        #expect(clones.count == 2)
+        #expect(Set(clones.map { group.blockGroup[$0] }).count == 1)
+
+        // The answer is one copy's worth, and it does not depend on which of
+        // the three is kept. Keeping a clone leaves its twin free to go for
+        // nothing and the real copy for 40 Ko; keeping the real copy lets the
+        // *pair* of clones go, which releases their shared blocks exactly
+        // once. Charging each clone zero on its own lost that second reading.
+        let each = try #require(group.freeableBytes[clones[0]])
+        #expect(each >= 40_000)
+        #expect(group.reclaimableBytes >= 40_000)
+        #expect(group.reclaimableBytes < 80_000)
+    }
+
+    @Test("A folder copied for real still promises a copy's worth")
+    func copiedFolderStillCounts() async throws {
+        let fixture = try Fixture()
+        try fixture.twoCopies("Photos", "Photos copie")
+
+        let scan = await ScanEngine.scan(root: fixture.path)
+        let result = try #require(await DuplicateFinder.find(
+            in: scan.store, under: 0, options: options
+        ))
+        let group = try #require(result.folderGroups.first {
+            Set($0.folders.map(scan.store.name(of:))) == ["Photos", "Photos copie"]
+        })
+        // The measurement has to stay silent when there is nothing to say, or
+        // it would zero out every honest duplicate on the disk.
+        #expect(!group.sharesBlocks)
+        #expect(group.reclaimableBytes > 0)
     }
 }
