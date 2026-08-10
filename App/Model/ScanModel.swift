@@ -1739,7 +1739,9 @@ final class ScanModel {
         var folderCandidates: [(display: DuplicateGroupDisplay, folders: [Int32])] = []
         for group in duplicates.folderGroups {
             let live = group.folders.filter {
-                !store.isEffectivelyDeleted($0) && (searchMask?.keeps($0) ?? true)
+                !store.isEffectivelyDeleted($0)
+                    && (searchMask?.keeps($0) ?? true)
+                    && Self.isOfferable(store.path(of: $0))
             }
             guard live.count >= 2 else { continue }
             let copies = live.map {
@@ -1807,6 +1809,7 @@ final class ScanModel {
                         && !FolderCoverage.hasAncestor(
                             of: node, in: absorbed, store: store
                         )
+                        && Self.isOfferable(store.path(of: node))
                 }
                 if !kept.nodes.isEmpty { storages.append(kept) }
             }
@@ -1872,6 +1875,29 @@ final class ScanModel {
         }
         duplicateKeepers = keepers
         duplicateMarked = duplicateMarked.intersection(duplicateDisplay.map(\.id))
+    }
+
+    /// Never propose what the deleter is going to refuse.
+    ///
+    /// macOS's own working area under `/private/var/folders` is the case that
+    /// surfaced this. To validate the signature of a running app, macOS clones
+    /// the whole bundle in there — and an APFS clone is byte-for-byte identical
+    /// to its original, so it is a real duplicate by every measure Silt has.
+    /// It is also regenerated on demand, cleared at every boot, and refused by
+    /// the deny list. Listing it spent the user's attention on a decision whose
+    /// only possible ending was "protégé".
+    ///
+    /// Worse, the figure beside it was fiction: `clonefile` gives each file a
+    /// fresh inode with one link, so the reclaim arithmetic — which reads
+    /// inodes and `st_nlink` — cannot tell a clone from a real copy and counted
+    /// every shared byte as recoverable. Four gigabytes that deleting would
+    /// never have returned.
+    ///
+    /// A group whose copies mostly disappear here falls below two members and
+    /// leaves through the guard that was already there.
+    private static func isOfferable(_ path: String) -> Bool {
+        if case .forbidden = DenyList.verdict(for: path) { return false }
+        return true
     }
 
     /// Domain byte in front of every group id. Both kinds of group key their

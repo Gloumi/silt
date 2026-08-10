@@ -100,6 +100,15 @@ struct DenyListTests {
             Issue.record("le dossier temporaire devrait avertir")
         }
         #expect(DenyList.verdict(for: "/private/var/vm/swapfile0").isForbidden)
+
+        // The `X` sibling of C and T, where macOS clones a running app's
+        // bundle to check its signature. Those clones are byte-identical to
+        // the app, so the duplicates view finds them and would offer them —
+        // which is why it now asks this question before listing anything.
+        let clone = "/private/var/folders/6_/abcdefg/X/"
+            + "com.google.Chrome.code_sign_clone/code_sign_clone.gY0GQp"
+        #expect(DenyList.verdict(for: clone).isForbidden)
+        #expect(DenyList.verdict(for: clone + "/Google Chrome.app.bundle").isForbidden)
     }
 
     @Test("Ordinary junk is allowed without ceremony")
