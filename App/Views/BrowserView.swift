@@ -117,40 +117,66 @@ struct BrowserView: View {
     @ViewBuilder
     private func entryList(store: NodeStore, parentSize: Int64) -> some View {
         ZStack {
-            List(model.rows, id: \.self, selection: Bindable(model).selection) { node in
+            NodeList(
+                nodes: model.rows,
+                selection: Bindable(model).selection,
+                primaryAction: { Open.perform($0, in: model) },
+                row: { node, isSelected in
                     EntryRow(
                         store: store,
                         node: node,
                         size: model.size(of: node),
-                        fraction: Double(model.size(of: node)) / Double(parentSize)
+                        fraction: Double(model.size(of: node)) / Double(parentSize),
+                        isSelected: isSelected
                     )
-                    .listRowSeparator(.hidden)
-                    .contentShape(.rect)
-                    .onTapGesture(count: 2) { model.enter(node) }
-                    .contextMenu {
-                        Button("Afficher dans le Finder") { reveal(store, node) }
+                },
+                menu: { items in
+                    // Worded like the slice menu the charts show, so one gesture
+                    // does not answer to two vocabularies.
+                    if let node = items.count == 1 ? items.first : nil {
+                        Button("Ouvrir") { Open.perform(items, in: model) }
+                            .disabled(!model.canEnter(node))
+                        Button("Afficher dans le Finder") {
+                            Open.inFinder(store.path(of: node))
+                        }
                         Divider()
+                    }
+                    if items.isEmpty {
+                        // Right-clicked the empty area below the rows: the one
+                        // thing to do down there is leave.
+                        Button("Remonter d'un niveau") { model.goUp() }
+                            .disabled(!model.canGoUp)
+                    } else {
                         Button("Mettre à la corbeille", role: .destructive) {
-                            if !model.selection.contains(node) {
-                                model.selection = [node]
-                            }
-                            model.requestDeletion()
+                            model.requestDeletion(items)
                         }
                     }
                 }
-            .listStyle(.inset)
+            )
             // A filter matching nothing is not an empty folder, and the
             // group above already says so.
             if model.rows.isEmpty, !model.isFiltering {
-                ContentUnavailableView("Dossier vide", systemImage: "folder")
+                emptyState(store)
             }
         }
     }
 
-    private func reveal(_ store: NodeStore, _ node: Int32) {
-        NSWorkspace.shared.selectFile(
-            store.path(of: node), inFileViewerRootedAtPath: ""
-        )
+    /// A folder macOS refused to open is not an empty folder — and now that one
+    /// can be entered, it must not claim to be the other. The badge on the row
+    /// and the inspector's note both already say "illisible"; standing inside
+    /// it is the third place the same fact has to survive.
+    @ViewBuilder
+    private func emptyState(_ store: NodeStore) -> some View {
+        if store.flags[Int(model.currentNode)].contains(.unreadable) {
+            ContentUnavailableView(
+                "Dossier illisible", systemImage: "lock",
+                description: Text(
+                    "Son contenu n'a pas pu être lu. Activez l'accès complet au disque."
+                )
+            )
+        } else {
+            ContentUnavailableView("Dossier vide", systemImage: "folder")
+        }
     }
 }
 
@@ -161,6 +187,7 @@ private struct EntryRow: View {
     let node: Int32
     let size: Int64
     let fraction: Double
+    let isSelected: Bool
 
     var body: some View {
         let flags = store.flags[Int(node)]
@@ -208,21 +235,16 @@ private struct EntryRow: View {
                 .monospacedDigit()
                 .frame(width: 78, alignment: .trailing)
 
+            // Shown for every folder that can be opened, empty ones included —
+            // the same test the double-click now makes, so the affordance and
+            // the gesture cannot disagree.
             Image(systemName: "chevron.right")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-                .opacity(isDirectory && store.childCount[Int(node)] > 0 ? 1 : 0)
+                .opacity(isDirectory && !flags.contains(.notDescended) ? 1 : 0)
         }
         .padding(.vertical, 2)
-        // The bar is the row: size is readable at a glance without reading a
-        // single number.
-        .background(alignment: .leading) {
-            GeometryReader { geometry in
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(.proportionBar)
-                    .frame(width: geometry.size.width * min(1, max(0, fraction)))
-            }
-        }
+        .proportionBar(fraction, isSelected: isSelected)
     }
 
     private var friendlyName: String? {

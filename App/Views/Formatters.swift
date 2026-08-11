@@ -46,3 +46,22 @@ extension ShapeStyle where Self == Color {
     /// Fill behind a row, sized to the row's share of its parent.
     static var proportionBar: Color { .accentColor.opacity(0.14) }
 }
+
+extension View {
+    /// The row *is* the bar: its size is readable at a glance without reading a
+    /// single number.
+    ///
+    /// Drawn inside the cell, so on a selected row it lands on top of the
+    /// selection fill — where an accent tint over accent vanishes, and where a
+    /// neutral wash still reads. Both lists now have a real selection, so both
+    /// need the second colour.
+    func proportionBar(_ fraction: Double, isSelected: Bool = false) -> some View {
+        background(alignment: .leading) {
+            GeometryReader { geometry in
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isSelected ? Color.white.opacity(0.2) : .proportionBar)
+                    .frame(width: geometry.size.width * min(1, max(0, fraction)))
+            }
+        }
+    }
+}

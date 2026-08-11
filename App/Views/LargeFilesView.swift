@@ -13,10 +13,6 @@ struct LargeFilesView: View {
     let model: ScanModel
     let store: NodeStore
 
-    /// Last row the user clicked on its own, so ⇧-clic knows where the range
-    /// starts. Never a selection of its own — just a bookmark.
-    @State private var anchor: Int32?
-
     var body: some View {
         content
             .task(id: model.largeFilesKey) { model.ensureLargeFiles() }
@@ -80,54 +76,67 @@ struct LargeFilesView: View {
         VStack(spacing: 0) {
             summary(files)
             Divider()
-            // Checkboxes rather than list selection, like the Cleanup view:
-            // picking files to trash is the whole job here, and a tick box
-            // says "marked for action" where a blue row only says "looked at".
-            // The ticks still live in `model.selection`, so Quick Look, ⌘⌫
-            // and the inspector keep working on them.
-            List(files, id: \.self) { node in
-                LargeFileRow(
-                    store: store,
-                    node: node,
-                    size: model.size(of: node),
-                    // Relative to the biggest of the list, not to the folder:
-                    // a top-100 where every bar is 2 % of the parent reads as
-                    // a wall of slivers and says nothing about the ranking.
-                    fraction: Double(model.size(of: node))
-                        / Double(max(1, model.size(of: files[0]))),
-                    currentPath: store.path(of: model.currentNode),
-                    isChecked: model.selection.contains(node),
-                    onClick: { click(node, in: files) }
-                )
-                .listRowSeparator(.hidden)
-                .contextMenu {
-                    Button("Voir dans l'arborescence") { model.reveal(node) }
-                    Button("Afficher dans le Finder") { revealInFinder(node) }
-                    Button("Aperçu rapide") {
-                        // Straight to the preview, without routing through the
-                        // selection: peeking at one file must not wipe a
-                        // painstakingly ticked list.
-                        QuickLookPanel.shared.show(
-                            [URL(fileURLWithPath: store.path(of: node))]
-                        )
-                    }
-                    Divider()
-                    Button("Mettre à la corbeille", role: .destructive) {
-                        if !model.selection.contains(node) {
-                            model.selection = [node]
+            // A real list selection, like the tree and like the Finder. The
+            // tick boxes this replaces made "marked for the trash" and "being
+            // looked at" the same act, and the inspector reads that one state
+            // as the second: ticking a file to compare it with the first
+            // emptied the preview pane, since anything past one item routes to
+            // a panel with no thumbnail and no path. Without a selection
+            // binding there was no keyboard either — the arrow keys belong to
+            // the table, and there was no table selection to move.
+            NodeList(
+                nodes: files,
+                selection: Bindable(model).selection,
+                // "Ouvrir" here means going to where the file lives: it was
+                // pulled out of a subtree, and its own folder is the one thing
+                // the row cannot show. The Finder stays one item down.
+                primaryAction: { Open.perform($0, in: model) },
+                row: { node, isSelected in
+                    LargeFileRow(
+                        store: store,
+                        node: node,
+                        size: model.size(of: node),
+                        // Relative to the biggest of the list, not to the
+                        // folder: a top-100 where every bar is 2 % of the
+                        // parent reads as a wall of slivers and says nothing
+                        // about the ranking.
+                        fraction: Double(model.size(of: node))
+                            / Double(max(1, model.size(of: files[0]))),
+                        currentPath: store.path(of: model.currentNode),
+                        isSelected: isSelected
+                    )
+                },
+                menu: { items in
+                    if let node = items.count == 1 ? items.first : nil {
+                        Button("Voir dans l'arborescence") { model.reveal(node) }
+                        Button("Afficher dans le Finder") {
+                            Open.inFinder(store.path(of: node))
                         }
-                        model.requestDeletion()
+                        Button("Aperçu rapide") {
+                            QuickLookPanel.shared.show(
+                                [URL(fileURLWithPath: store.path(of: node))]
+                            )
+                        }
+                        Divider()
+                    }
+                    if !items.isEmpty {
+                        Button("Mettre à la corbeille", role: .destructive) {
+                            model.requestDeletion(items)
+                        }
                     }
                 }
-            }
-            .listStyle(.inset)
+            )
         }
     }
 
     private func summary(_ files: [Int32]) -> some View {
         let total = files.reduce(Int64(0)) { $0 + model.size(of: $1) }
+        // A set, not `files.contains`: this is recomputed on every arrow key
+        // now that the keyboard walks the list, and a linear scan per selected
+        // row through a hundred of them is a scan too many.
+        let visible = Set(files)
         let selected = model.selection
-            .filter { files.contains($0) }
+            .filter(visible.contains)
             .reduce(Int64(0)) { $0 + model.size(of: $1) }
 
         return HStack(alignment: .center, spacing: 16) {
@@ -140,7 +149,11 @@ struct LargeFilesView: View {
 
             Spacer()
 
-            if selected > 0 {
+            // Only past one row: a single file's size is already in its own row
+            // and in the inspector, and a third copy of it flickering at every
+            // arrow key is noise. Several is the case where the running total
+            // is the point.
+            if model.selection.count > 1, selected > 0 {
                 Text(Format.bytes(selected))
                     .font(.callout.weight(.medium))
                     .monospacedDigit()
@@ -196,33 +209,6 @@ struct LargeFilesView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
     }
-
-    /// One click ticks the row; ⇧-clic ticks the whole stretch since the last
-    /// plain click, the way the Finder extends a selection.
-    ///
-    /// The range only ever *adds*: extending over already-ticked rows must not
-    /// untick them, or growing a selection would eat its own beginning.
-    private func click(_ node: Int32, in files: [Int32]) {
-        if NSEvent.modifierFlags.contains(.shift),
-           let anchor,
-           let from = files.firstIndex(of: anchor),
-           let to = files.firstIndex(of: node) {
-            model.selection.formUnion(files[min(from, to)...max(from, to)])
-            return
-        }
-        if model.selection.contains(node) {
-            model.selection.remove(node)
-        } else {
-            model.selection.insert(node)
-        }
-        anchor = node
-    }
-
-    private func revealInFinder(_ node: Int32) {
-        NSWorkspace.shared.activateFileViewerSelecting(
-            [URL(fileURLWithPath: store.path(of: node))]
-        )
-    }
 }
 
 // MARK: - Rows
@@ -233,19 +219,12 @@ private struct LargeFileRow: View {
     let size: Int64
     let fraction: Double
     let currentPath: String
-    let isChecked: Bool
-    let onClick: () -> Void
+    let isSelected: Bool
 
     var body: some View {
         let flags = store.flags[Int(node)]
 
         HStack(spacing: 9) {
-            Toggle("", isOn: Binding(
-                get: { isChecked },
-                set: { _ in onClick() }
-            ))
-            .labelsHidden()
-
             Image(nsImage: IconCache.shared.icon(
                 name: store.name(of: node),
                 isDirectory: flags.contains(.directory),
@@ -310,15 +289,7 @@ private struct LargeFileRow: View {
             .frame(width: 92, alignment: .trailing)
         }
         .padding(.vertical, 2)
-        .contentShape(.rect)
-        .onTapGesture(perform: onClick)
-        .background(alignment: .leading) {
-            GeometryReader { geometry in
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(.proportionBar)
-                    .frame(width: geometry.size.width * min(1, max(0, fraction)))
-            }
-        }
+        .proportionBar(fraction, isSelected: isSelected)
     }
 
     /// Folder holding the file, relative to the folder on screen. Nil for a

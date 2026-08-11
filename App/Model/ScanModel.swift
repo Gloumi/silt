@@ -680,9 +680,11 @@ final class ScanModel {
             return [URL(fileURLWithPath: store.path(of: node))]
         }
         // Rows first, in their own order; then anything selected elsewhere —
-        // Large Files and Duplicates both tick items that are not children of
-        // the visible directory.
-        var picked = rows.filter { selection.contains($0) && previewable($0) }
+        // Large Files and Duplicates both name items that are not children of
+        // the visible directory. In the extract the drawn order *is* the
+        // ranking, so the panel's arrows should walk that and not the paths.
+        let ordered = presentation == .largeFiles ? (largeFiles ?? rows) : rows
+        var picked = ordered.filter { selection.contains($0) && previewable($0) }
         let seen = Set(picked)
         picked += selection
             .filter { !seen.contains($0) && previewable($0) }
@@ -692,9 +694,81 @@ final class ScanModel {
 
     /// True when the node can be opened. A file cannot, and neither can a
     /// collapsed directory — those get selected instead.
+    ///
+    /// `childCount > 0` used to stand in for "was walked into", which quietly
+    /// made every genuinely empty folder unopenable: the double-click did
+    /// nothing at all and the row lost its chevron, so the folder read as a
+    /// file with no way to tell. The flag is the honest test — `.notDescended`
+    /// is set for exactly the directories that have no children in the store
+    /// and never will: packages, collapsed names, mount points, firmlinks left
+    /// behind. Everything else was read, and empty is an answer.
+    ///
+    /// `.unreadable` is deliberately not excluded: the Finder opens a folder it
+    /// cannot read too, and saying so inside it beats a dead double-click.
     func canEnter(_ node: Int32) -> Bool {
+        guard let store, node >= 0, Int(node) < store.count else { return false }
+        let flags = store.flags[Int(node)]
+        return flags.contains(.directory) && !flags.contains(.notDescended)
+    }
+
+    /// Whether standing *inside* the node would show anything.
+    ///
+    /// `canEnter` says the folder can be opened at all; this says it is worth
+    /// opening. The difference is the empty folder — openable, but better
+    /// pointed at from its parent, which is what revealing one is for.
+    private func hasVisibleContents(_ node: Int32) -> Bool {
         guard let store else { return false }
-        return store.isDirectory(node) && store.childCount[Int(node)] > 0
+        return canEnter(node) && store.childCount[Int(node)] > 0
+    }
+
+    /// What "ouvrir" means for a node, in the view it is opened from.
+    ///
+    /// Three answers, and they are the three the app already has: step into a
+    /// folder, jump to where a listed item lives, hand the item to the Finder.
+    /// Never a launch — Silt opens no documents, and a double-click that starts
+    /// a video player or an installer is not a gesture anyone asked for.
+    enum OpenIntent: Equatable {
+        case enter(Int32)
+        case reveal(Int32)
+        case finder(String)
+    }
+
+    func openIntent(for node: Int32) -> OpenIntent? {
+        guard let store, node >= 0, Int(node) < store.count,
+              !store.isEffectivelyDeleted(node)
+        else { return nil }
+        // The flat extracts list items pulled from anywhere in the subtree, so
+        // opening one means going where it lives — which is what their context
+        // menus have always called "Voir dans l'arborescence". In the tree an
+        // item is already shown where it lives, so "there" is the Finder.
+        if presentation == .largeFiles || presentation == .duplicates {
+            return .reveal(node)
+        }
+        if canEnter(node) { return .enter(node) }
+        return .finder(store.path(of: node))
+    }
+
+    /// What ⌘↓ would do right now, and nil when it would do nothing.
+    ///
+    /// With several items picked there is no single place to go; with a tool on
+    /// screen the selection describes a tree nobody is looking at, exactly as
+    /// the inspector already has to account for.
+    var openIntent: OpenIntent? {
+        guard !Presentation.tools.contains(presentation),
+              selection.count == 1, let node = selection.first
+        else { return nil }
+        return openIntent(for: node)
+    }
+
+    /// The menu item's title, which names what the key is about to do rather
+    /// than a generic verb. Three wordings for one key is the Finder's own
+    /// habit — "Ouvrir", "Afficher l'original".
+    func openLabel(for intent: OpenIntent?) -> String {
+        switch intent {
+        case .reveal: "Voir dans l'arborescence"
+        case .finder: "Afficher dans le Finder"
+        case .enter, nil: "Ouvrir"
+        }
     }
 
     /// Single click in a visualisation: open it if we can, otherwise pick it.
@@ -929,8 +1003,7 @@ final class ScanModel {
     // MARK: - Navigation
 
     func enter(_ node: Int32) {
-        guard let store, store.isDirectory(node), store.childCount[Int(node)] > 0
-        else { return }
+        guard canEnter(node) else { return }
         // Entering something found inside an "others" slice leaves the slice
         // behind: we are in a real folder now.
         othersScope = nil
@@ -988,7 +1061,10 @@ final class ScanModel {
 
         // Standing *inside* a file is not a thing, and neither is standing
         // inside a folder the scanner collapsed: show it selected in its parent.
-        if canEnter(node), !selectingInParent || trail.count <= 1 {
+        // An empty folder is openable but has nothing to show, so it belongs
+        // with them — pointing at it among its siblings says more than dropping
+        // the user into "Dossier vide".
+        if hasVisibleContents(node), !selectingInParent || trail.count <= 1 {
             selection = []
         } else {
             trail.removeLast()
@@ -1079,10 +1155,21 @@ final class ScanModel {
 
     // MARK: - Deletion
 
+    /// Builds the plan the confirmation sheet describes, for whatever is picked.
+    func requestDeletion() { requestDeletion(selection) }
+
     /// Builds the plan the confirmation sheet describes. Nothing touches the
     /// filesystem until `confirmDeletion` runs.
-    func requestDeletion() {
-        guard let store, !selection.isEmpty else { return }
+    ///
+    /// The set is a parameter rather than the selection itself because a menu
+    /// built with `contextMenu(forSelectionType:)` is handed the rows the
+    /// *table* settled on: right-clicking an unselected row acts on that row
+    /// alone. The call sites used to force the two to agree by assigning the
+    /// selection first, which the table now does by itself — and doing it twice
+    /// meant a right-click quietly rewrote a selection it had no business
+    /// touching.
+    func requestDeletion(_ nodes: Set<Int32>) {
+        guard let store, !nodes.isEmpty else { return }
         var plan = DeletionPlan(
             requests: [], names: [], totalBytes: 0, cautions: [], refused: []
         )
@@ -1095,12 +1182,12 @@ final class ScanModel {
         // together in the tree) and the normal case once a folder duplicate
         // and a file duplicate under it are both marked.
         //
-        // `selection.sorted()` is what makes the single pass enough: the store
+        // `nodes.sorted()` is what makes the single pass enough: the store
         // appends children after their parent, so an ancestor is always seen
         // before its descendants.
         var claimed: Set<Int32> = []
 
-        for node in selection.sorted() {
+        for node in nodes.sorted() {
             let path = store.path(of: node)
             let name = store.name(of: node)
             if FolderCoverage.hasAncestor(of: node, in: claimed, store: store) {
@@ -1599,6 +1686,13 @@ final class ScanModel {
             // result computed against the previous scan must die here.
             guard let self, !Task.isCancelled, self.scanID == id else { return }
             largeFiles = top
+            // The extract's selection may only ever name files of the extract.
+            // Arriving here from the tree with a folder picked would otherwise
+            // leave the trash button armed on something nobody can see, and a
+            // file that has dropped out of the top hundred would keep counting
+            // towards the summary. The tick boxes this replaced could not go
+            // stale — they were drawn per row — but a real selection can.
+            selection.formIntersection(top)
             largeFilesPhase = .ready
         }
     }
@@ -2136,8 +2230,9 @@ final class ScanModel {
             for copy in removableCopies(of: group) { doomed.insert(copy.id) }
         }
         guard !doomed.isEmpty else { return }
-        selection = doomed
-        requestDeletion()
+        // Not through the selection: that is the card the user is looking at,
+        // and a batch built from the marks has no business replacing it.
+        requestDeletion(doomed)
     }
 
     // MARK: - Search
@@ -2310,8 +2405,7 @@ final class ScanModel {
 
     func requestJunkDeletion() {
         guard !junkSelection.isEmpty else { return }
-        selection = junkSelection
-        requestDeletion()
+        requestDeletion(junkSelection)
     }
 
     /// Turns a report into the banner: the counts, the first failure's actual

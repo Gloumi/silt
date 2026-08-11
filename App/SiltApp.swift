@@ -66,9 +66,21 @@ struct SiltApp: App {
                 Button("Actualiser l'analyse") { model.rescan() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(!model.canRescan)
+                // ⌘↓ / ⌘↑ are the Finder's pair, and a menu item is the only
+                // form of them that works before a list has been clicked into:
+                // key equivalents are consulted before any responder sees the
+                // key. The title changes with what is picked — three verbs for
+                // one key is the Finder's own habit.
+                Button(model.openLabel(for: model.openIntent)) {
+                    Open.perform(model.selection, in: model)
+                }
+                .keyboardShortcut(.downArrow, modifiers: .command)
+                .disabled(model.openIntent == nil)
                 Button("Remonter d'un niveau") { model.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
-                    .disabled(model.trail.count <= 1)
+                    // `canGoUp`, not the trail alone: standing inside an
+                    // aggregated slice is a level to leave like any other.
+                    .disabled(!model.canGoUp)
                 Button("Aperçu rapide") {
                     QuickLookPanel.shared.toggle(model.previewItems)
                 }
@@ -220,7 +232,7 @@ struct ContentView: View {
                 } label: {
                     Label("Remonter", systemImage: "chevron.up")
                 }
-                .disabled(model.trail.count <= 1)
+                .disabled(!model.canGoUp)
             }
             ToolbarItem {
                 Picker("Taille", selection: Binding(

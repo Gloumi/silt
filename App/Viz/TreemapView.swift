@@ -259,20 +259,17 @@ struct SliceMenu: View {
             let path = store.path(of: node)
             Button("Ouvrir") { model.enter(node) }
                 .disabled(!model.canEnter(node))
-            Button("Afficher dans le Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting(
-                    [URL(fileURLWithPath: path)]
-                )
-            }
+            Button("Afficher dans le Finder") { Open.inFinder(path) }
             Divider()
+            // The clicked slice, not the selection: right-clicking one tile
+            // while another is selected must not trash the other.
             Button("Mettre à la corbeille", role: .destructive) {
-                model.selection = [node]
-                model.requestDeletion()
+                model.requestDeletion([node])
             }
             .disabled(DenyList.verdict(for: path).isForbidden)
         } else {
             Button("Remonter d'un niveau") { model.goUp() }
-                .disabled(model.trail.count <= 1)
+                .disabled(!model.canGoUp)
         }
     }
 }

@@ -402,8 +402,7 @@ private struct Details: View {
             }
 
             Button(role: .destructive) {
-                model.selection = [node]
-                model.requestDeletion()
+                model.requestDeletion([node])
             } label: {
                 Label("Mettre à la corbeille", systemImage: "trash")
                     .frame(maxWidth: .infinity)
