@@ -3,9 +3,10 @@ import DiskCore
 import Foundation
 import Observation
 
-/// Measures what a reboot would free: swap files under /private/var/vm, which
-/// only a restart can release, and the user's darwin cache directory, which
-/// macOS purges at boot and the app can therefore empty right away.
+/// Measures what a reboot would free: the swap files, which only a restart
+/// releases, and the user's darwin cache directory, which macOS purges at boot
+/// and the app can therefore empty right away. The sleep image sits alongside
+/// them and is measured too, but counted apart: a restart does not touch it.
 ///
 /// Deliberately separate from `ScanModel`: the measurement owes nothing to the
 /// scan lifecycle and should survive every one of its resets.
@@ -29,7 +30,11 @@ final class RebootModel {
     }
 
     struct Estimate: Sendable {
+        /// `swapfile*`, in boot order. A restart deletes every one of them.
         var swapFiles: [SwapFile]
+        /// The hibernation image, which survives a restart untouched — hence
+        /// its own list, and its absence from `totalBytes`.
+        var sleepImages: [SwapFile]
         /// Largest first.
         var cacheEntries: [CacheEntry]
         /// Nil when confstr failed, which no healthy system does.
@@ -38,6 +43,7 @@ final class RebootModel {
         var cacheUnreadable: Bool
 
         var swapBytes: Int64 { swapFiles.reduce(0) { $0 + $1.bytes } }
+        var sleepImageBytes: Int64 { sleepImages.reduce(0) { $0 + $1.bytes } }
         var cacheBytes: Int64 { cacheEntries.reduce(0) { $0 + $1.bytes } }
         var totalBytes: Int64 { swapBytes + cacheBytes }
     }
@@ -100,22 +106,43 @@ final class RebootModel {
     // MARK: - Measurement
 
     private nonisolated static func measure() -> Estimate {
-        // Swap and the sleep image. /private/var/vm is root-owned but
-        // world-listable, and stat needs no read permission — sizes come
-        // through without any privilege. SIP keeps the files themselves out
-        // of reach: this section is informative only.
-        let vm = "/private/var/vm"
+        // Swap and the sleep image live in two different places, and have done
+        // since Catalina moved virtual memory onto its own APFS volume: the
+        // swapfiles go to /System/Volumes/VM, while the hibernation image
+        // stays at the old /var/vm (`pmset -g hibernatefile` still says so).
+        // Reading only the old path is how forty-odd gigabytes of swap can go
+        // entirely unreported here.
+        //
+        // Both directories are root-owned but world-listable, and stat needs
+        // no read permission — sizes come through without any privilege. SIP
+        // keeps the files themselves out of reach: this section is
+        // informative only.
         var swap: [SwapFile] = []
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: vm)) ?? []
-        for name in names.sorted()
-        where name.hasPrefix("swapfile") || name == "sleepimage" {
-            let path = vm + "/" + name
-            var info = stat()
-            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG
-            else { continue }
-            swap.append(SwapFile(
-                name: name, path: path, bytes: Int64(info.st_blocks) * 512
-            ))
+        var sleep: [SwapFile] = []
+        var seen: Set<String> = []
+        for directory in ["/System/Volumes/VM", "/private/var/vm"] {
+            let names =
+                (try? FileManager.default.contentsOfDirectory(atPath: directory))
+                ?? []
+            // Finder order, not ASCII order: `sorted()` alone files swapfile10
+            // between swapfile1 and swapfile2, and a stack of forty reads as
+            // shuffled.
+            for name in names.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending })
+            where name.hasPrefix("swapfile") || name == "sleepimage" {
+                let path = directory + "/" + name
+                var info = stat()
+                guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG
+                else { continue }
+                // The two paths are distinct on every Mac seen so far, but a
+                // symlink or a firmlink between them would otherwise have us
+                // count the same blocks twice.
+                guard seen.insert("\(info.st_dev):\(info.st_ino)").inserted
+                else { continue }
+                let file = SwapFile(
+                    name: name, path: path, bytes: Int64(info.st_blocks) * 512
+                )
+                if name == "sleepimage" { sleep.append(file) } else { swap.append(file) }
+            }
         }
 
         // The darwin cache dir's children, each measured with the same
@@ -140,7 +167,7 @@ final class RebootModel {
         }
 
         return Estimate(
-            swapFiles: swap, cacheEntries: entries,
+            swapFiles: swap, sleepImages: sleep, cacheEntries: entries,
             cacheDirectory: cacheDirectory, cacheUnreadable: unreadable
         )
     }

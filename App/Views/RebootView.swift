@@ -19,7 +19,11 @@ struct RebootView: View {
     @ViewBuilder
     private var content: some View {
         if let estimate = reboot.estimate {
-            if estimate.totalBytes == 0, !estimate.cacheUnreadable {
+            // The sleep image frees nothing, so it stays out of `totalBytes` —
+            // but a 2 Go file on the disk is still worth showing rather than
+            // answering "rien à libérer" and leaving it unexplained.
+            if estimate.totalBytes == 0, estimate.sleepImageBytes == 0,
+               !estimate.cacheUnreadable {
                 ContentUnavailableView {
                     Label("Rien à libérer", systemImage: "sparkles")
                 } description: {
@@ -91,9 +95,40 @@ struct RebootView: View {
                             .foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Mémoire virtuelle protégée par le système — seul un redémarrage libère cet espace.")
+                    Text("macOS crée ces fichiers quand la mémoire vive ne "
+                         + "suffit plus et ne les rend quasiment jamais en "
+                         + "cours de session : ils s'empilent jusqu'au "
+                         + "redémarrage, qui les efface tous.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                // Its own section, and not a row among the swapfiles: it sits
+                // in the same place and looks like the same thing, but a
+                // restart leaves it exactly where it is. Counting it in the
+                // headline would promise back 2 Go that never come.
+                if !estimate.sleepImages.isEmpty {
+                    Section {
+                        ForEach(estimate.sleepImages) { file in
+                            SwapRow(file: file)
+                        }
+                    } header: {
+                        HStack(spacing: 6) {
+                            Label("Ni l'un ni l'autre", systemImage: "moon.zzz")
+                            Text("·").foregroundStyle(.tertiary)
+                            Text(Format.bytes(estimate.sleepImageBytes))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    } footer: {
+                        Text("L'image de veille : macOS y recopie la mémoire "
+                             + "avant de s'endormir, et la garde d'un "
+                             + "démarrage à l'autre. Ni la corbeille ni un "
+                             + "redémarrage ne la libèrent — sa taille dépend "
+                             + "du réglage de veille du Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .listStyle(.inset)
