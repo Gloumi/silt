@@ -1,6 +1,6 @@
 import AppKit
 import DiskCore
-import SwiftUI
+import Observation
 
 enum AppearanceSetting: String, CaseIterable, Identifiable {
     case system, light, dark
@@ -332,219 +332,35 @@ final class Preferences {
             : Self.defaultDuplicateFolderThreshold
     }
 
+    /// Back to what a fresh install has. Assigning the properties rather than
+    /// deleting the keys: every `didSet` above writes storage and, for the
+    /// appearance, repaints the app — going behind them would leave the
+    /// running window showing the old values until relaunch.
+    ///
+    /// Pinned locations and their per-folder views survive on purpose. Losing
+    /// the folders you added to the sidebar to a button called "réinitialiser
+    /// les réglages" is a surprise nobody asked for, and the Emplacements pane
+    /// already has a way to remove them one at a time. `hasSeenWelcome` and
+    /// `lastUsedPresentation` are app state rather than settings — clearing
+    /// the first would replay the welcome sheet at the next launch.
+    func resetToDefaults() {
+        useLogicalSize = false
+        descendIntoPackages = false
+        collapseDependencies = true
+        appearance = .system
+        defaultView = .fixed(.sunburst)
+        colorMode = .category
+        largeFilesAgeFilter = .all
+        duplicateThresholdBytes = Self.defaultDuplicateThreshold
+        duplicateFolderThresholdBytes = Self.defaultDuplicateFolderThreshold
+        recentSearches = []
+    }
+
     /// Scan options matching the current preferences.
     func scanOptions() -> ScanOptions {
         var options = ScanOptions()
         options.descendIntoPackages = descendIntoPackages
         if !collapseDependencies { options.collapsedDirectoryNames = [] }
         return options
-    }
-}
-
-struct SettingsView: View {
-    @Bindable private var preferences = Preferences.shared
-    private var estimator = ThresholdEstimate.shared
-    @State private var accessGranted = FullDiskAccess.isGranted
-
-    var body: some View {
-        Form {
-            Section("Apparence") {
-                Picker("Thème", selection: $preferences.appearance) {
-                    ForEach(AppearanceSetting.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Text("Les couleurs de la vue Anneaux ont deux jeux distincts, vérifiés séparément en clair et en sombre — ce n'est pas la même palette éclaircie.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker("Vue par défaut", selection: $preferences.defaultView) {
-                    ForEach(ScanModel.Presentation.browsing) {
-                        Text($0.label).tag(DefaultViewSetting.fixed($0))
-                    }
-                    Divider()
-                    Text("Dernière utilisée").tag(DefaultViewSetting.lastUsed)
-                }
-                Text("Vue appliquée à chaque sélection dans la barre latérale ; « Dernière utilisée » conserve la vue en cours d'un dossier à l'autre. Un clic droit sur un élément permet de lui attribuer sa propre vue par défaut.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker("Couleurs", selection: $preferences.colorMode) {
-                    ForEach(ColorMode.allCases) { Text($0.label).tag($0) }
-                }
-                Text("Dans les vues Anneaux et Blocs : une teinte par dossier de premier niveau, ou une échelle allant du récent à l'oublié. Se change aussi depuis le menu Présentation.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Mesure") {
-                Picker("Taille affichée", selection: $preferences.useLogicalSize) {
-                    Text("Occupée sur le disque").tag(false)
-                    Text("Taille logique").tag(true)
-                }
-                Text(preferences.useLogicalSize
-                     ? "Somme du contenu des fichiers, sans tenir compte de la compression ni des blocs partiellement remplis."
-                     : "Ce que le disque perd réellement — la mesure que donne « du » et que le Finder utilise pour l'espace libre.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Analyse") {
-                Toggle("Détailler le contenu des paquets", isOn: $preferences.descendIntoPackages)
-                Text("Les applications et bibliothèques Photos sont traitées comme un seul élément, comme dans le Finder.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Replier les dossiers de dépendances", isOn: $preferences.collapseDependencies)
-                Text("node_modules, .git, .next, vendor, .venv gardent leur taille exacte mais ne sont pas indexés fichier par fichier. Sur un dossier de développement, cela divise par deux le nombre d'éléments.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                threshold(
-                    "Doublons — fichiers d'au moins",
-                    bytes: $preferences.duplicateThresholdBytes,
-                    ladder: SizeLadder.file,
-                    help: "Seuls les fichiers d'au moins cette taille sont comparés. Descendre sous 1 Mo est ce qu'il faut faire pour retrouver des photos en double — la plupart pèsent entre 300 Ko et 3 Mo — mais le coût ne baisse pas proportionnellement : les petites tailles se répètent bien plus souvent, et sous 128 Ko chaque fichier est lu en entier au lieu d'être lu partiellement."
-                )
-
-                threshold(
-                    "Doublons — dossiers d'au moins",
-                    bytes: $preferences.duplicateFolderThresholdBytes,
-                    ladder: SizeLadder.folder,
-                    help: "Les dossiers entièrement identiques sont proposés en tête de la vue Doublons, et les fichiers qu'ils contiennent y sont regroupés. Confirmer un dossier oblige à lire chacun de ses fichiers, quelle que soit sa taille : un seuil bas coûte cher sur un disque de développement."
-                )
-
-                estimate
-            }
-
-            Section("Autorisations") {
-                LabeledContent("Accès complet au disque") {
-                    HStack(spacing: 7) {
-                        Image(systemName: accessGranted
-                              ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(accessGranted ? .green : .orange)
-                        Text(accessGranted ? "Accordé" : "Non accordé")
-                        if !accessGranted {
-                            Button("Réglages…") { FullDiskAccess.openSettings() }
-                        }
-                    }
-                }
-                if !accessGranted {
-                    Text("Sans cette autorisation, Mail, Messages, Photos et les sauvegardes d'appareils restent invisibles et manquent aux totaux.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        // Sized rather than fitted. `fixedSize(vertical:)` made the window as
-        // tall as its content, which was fine while the content was short and
-        // ran off the bottom of the screen the moment the two sliders and their
-        // explanations arrived. The grouped Form scrolls on its own; it just
-        // needs to be told it has a bottom.
-        .frame(width: 460, height: 620)
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification
-            )
-        ) { _ in accessGranted = FullDiskAccess.isGranted }
-    }
-
-    // MARK: - A threshold and what it costs
-
-    /// The slider drives an *index* into the ladder, so every position is a
-    /// value someone would actually write down.
-    private func threshold(
-        _ title: String, bytes: Binding<Int64>, ladder: [Int64], help: String
-    ) -> some View {
-        let index = Binding(
-            get: { Double(SizeLadder.index(of: bytes.wrappedValue, in: ladder)) },
-            set: { bytes.wrappedValue = SizeLadder.bytes(at: Int($0), in: ladder) }
-        )
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                Spacer(minLength: 12)
-                Text(Format.bytes(bytes.wrappedValue))
-                    .monospacedDigit()
-                    .fontWeight(.medium)
-            }
-            // A bare `Slider`, with the bounds written beside it by hand. Given
-            // a label — even an empty one — a Form reserves its label column
-            // and the track ends up squeezed into the right half of the row.
-            HStack(spacing: 8) {
-                Text(Format.bytes(ladder.first ?? 0))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Slider(value: index, in: 0...Double(ladder.count - 1), step: 1)
-                    // Without this a grouped Form still reserves its label
-                    // column for the control, and the track ends up squeezed
-                    // into the right half of the row with dead space beside it.
-                    .labelsHidden()
-                Text(Format.bytes(ladder.last ?? 0))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Text(help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let count = estimator.candidates(above: bytes.wrappedValue),
-               let toRead = estimator.bytesToRead(above: bytes.wrappedValue) {
-                // One walk answered every rung, so this follows the thumb
-                // instead of arriving after the pass has already cost the time.
-                Text("≈ \(Format.count(count)) fichiers à comparer, \(Format.bytes(toRead)) à lire")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.tint)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// The census behind the figures above. Off by default and asked for
-    /// explicitly: it walks the whole home folder, and taking minutes of disk
-    /// the moment someone opens Settings would be a poor trade for a number
-    /// they may not have come for.
-    @ViewBuilder
-    private var estimate: some View {
-        switch estimator.phase {
-        case .running(let seen):
-            HStack(spacing: 9) {
-                ProgressView().controlSize(.small)
-                Text("Estimation en cours — \(Format.count(seen)) fichiers parcourus")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Annuler") { estimator.cancel() }
-                    .controlSize(.small)
-            }
-        case .ready:
-            HStack(spacing: 9) {
-                Text("Estimation faite sur \(estimator.root) — indicative : la vue Doublons ne compare que le dossier où vous vous trouvez.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button("Recalculer") { estimator.measure() }
-                    .controlSize(.small)
-            }
-        case .failed:
-            HStack(spacing: 9) {
-                Text("Le dossier personnel n'a pas pu être parcouru.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Réessayer") { estimator.measure() }
-                    .controlSize(.small)
-            }
-        case .idle:
-            HStack(spacing: 9) {
-                Text("Une analyse préalable de votre dossier personnel dit combien de fichiers chaque seuil ferait comparer. Elle ne lit aucun contenu, seulement les tailles.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button("Estimer") { estimator.measure() }
-                    .controlSize(.small)
-            }
-        }
     }
 }

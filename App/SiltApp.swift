@@ -4,14 +4,20 @@ import UniformTypeIdentifiers
 
 @main
 struct SiltApp: App {
+    static let settingsWindow = "settings"
+
     @State private var model = ScanModel()
+    /// The browser's sidebar, held up here because the menu item that toggles
+    /// it is declared up here too — `.commands` belongs to the app, not to a
+    /// window.
+    @State private var sidebar = NavigationSplitViewVisibility.all
     /// Only here to put a Quick Look controller at the end of the responder
     /// chain; see QuickLookPanel.
     @NSApplicationDelegateAdaptor(QuickLookController.self) private var quickLook
 
     var body: some Scene {
         Window("Silt", id: "main") {
-            ContentView(model: model)
+            ContentView(model: model, sidebar: $sidebar)
                 // NSApp exists by the time a window appears, which it does not
                 // when Preferences is first constructed.
                 .task { Preferences.shared.applyAppearance() }
@@ -22,11 +28,46 @@ struct SiltApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
 
-        Settings { SettingsView() }
+        // An ordinary Window rather than the `Settings` scene, which is the one
+        // piece of this app SwiftUI still builds the old way: its window is an
+        // NSPanel that ignores `windowToolbarStyle`, so the pane list started
+        // below the traffic lights instead of running up behind them, and
+        // nothing short of reaching for the NSWindow could move it. Declared
+        // like any other window, the split view behaves exactly as the
+        // browser's does — which is all this ever needed.
+        //
+        // What the Settings scene did for free and is written out below: the
+        // Réglages… item under ⌘, , and not opening at launch.
+        Window("Réglages", id: Self.settingsWindow) {
+            SettingsWindow(model: model)
+                // A minimum plus an ideal: an opening size and a floor, without
+                // the fixed frame that made the old settings window
+                // unresizable. On the scene rather than inside the pane switch,
+                // so moving from pane to pane cannot resize the window.
+                .frame(minWidth: 680, idealWidth: 720,
+                       minHeight: 420, idealHeight: 560)
+        }
+        .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified)
+        // Settings open when asked for, never on their own — and a window left
+        // open at quit is not one to bring back at the next launch.
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
         .commands {
-            // Hiding the sidebar is a system gesture; this is the one line that
-            // puts it in the Présentation menu, under ⌃⌘S, localised by SwiftUI.
-            SidebarCommands()
+            CommandGroup(replacing: .appSettings) { OpenSettings() }
+            // Written out rather than taken from `SidebarCommands()`, for the
+            // same reason as the inspector item below: the stock command aims
+            // at whichever window is key, and it reaches the settings window
+            // too — one press collapsed its pane list, which is the only way
+            // around that window. This one is bound to the browser's own state
+            // and cannot touch anything else.
+            CommandGroup(after: .sidebar) {
+                Button(sidebar == .detailOnly
+                       ? "Afficher la barre latérale" : "Masquer la barre latérale") {
+                    sidebar = sidebar == .detailOnly ? .all : .detailOnly
+                }
+                .keyboardShortcut("s", modifiers: [.control, .command])
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Analyser un dossier…") { chooseFolder() }
                     .keyboardShortcut("o")
@@ -133,8 +174,22 @@ struct SiltApp: App {
     }
 }
 
+/// The Réglages… item, which the `Settings` scene used to file on its own.
+///
+/// A view rather than a plain Button in the command group: `openWindow` comes
+/// from the environment, and an App has none to read.
+private struct OpenSettings: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Réglages…") { openWindow(id: SiltApp.settingsWindow) }
+            .keyboardShortcut(",", modifiers: .command)
+    }
+}
+
 struct ContentView: View {
     let model: ScanModel
+    @Binding var sidebar: NavigationSplitViewVisibility
     /// Owned here rather than by ScanModel: the reboot measurement has
     /// nothing to do with the scan lifecycle and survives all its resets.
     @State private var reboot = RebootModel()
@@ -172,7 +227,7 @@ struct ContentView: View {
     }
 
     private var splitView: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $sidebar) {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
         } detail: {

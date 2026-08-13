@@ -51,16 +51,8 @@ struct SidebarView: View {
                     } menuItems: {
                         Divider()
                         Button("Retirer de la liste") {
-                            preferences.removeLocation(path)
-                            // Leaving the selection on a row that no longer
-                            // exists would strand the window on it.
-                            if model.selectedRoot == path,
-                               let fallback = volumes.first {
-                                model.select(
-                                    path: model.rootPath ?? fallback.url.path,
-                                    name: fallback.name
-                                )
-                            }
+                            PinnedLocations.remove(path, from: model,
+                                                   fallback: volumes.first)
                         }
                         Button("Afficher dans le Finder") {
                             NSWorkspace.shared.activateFileViewerSelecting(
@@ -76,7 +68,7 @@ struct SidebarView: View {
                     // Sized and coloured off the header itself, not left at the
                     // body default — an oversized glyph beside small grey caps
                     // reads as a stray control rather than part of the heading.
-                    Button(action: addFolder) {
+                    Button { PinnedLocations.add(to: model) } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 12, weight: .semibold))
                             .frame(width: 18, height: 18)
@@ -277,17 +269,6 @@ struct SidebarView: View {
         }
     }
 
-    private func addFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Ajouter"
-        panel.message = "Choisissez un dossier à garder dans la liste."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        preferences.addLocation(url.path)
-        model.select(path: url.path, name: QuickLocation.displayName(of: url.path))
-    }
 }
 
 private struct VolumeRow: View {
