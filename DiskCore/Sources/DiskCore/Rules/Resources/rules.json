@@ -15,8 +15,12 @@
       "category": "dependencies",
       "title": "Dépendances npm",
       "safety": "safe",
-      "recovery": "npm install",
-      "match": { "directoryName": "node_modules" }
+      "recovery": "npm install (ou yarn, pnpm, bun install)",
+      "match": {
+        "directoryName": "node_modules",
+        "siblingFiles": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+                         "bun.lock", "bun.lockb", "npm-shrinkwrap.json"]
+      }
     },
     {
       "id": "composer-vendor",
@@ -24,7 +28,7 @@
       "title": "Dépendances Composer",
       "safety": "safe",
       "recovery": "composer install",
-      "match": { "directoryName": "vendor", "siblingFile": "composer.json" }
+      "match": { "directoryName": "vendor", "siblingFiles": ["composer.json"] }
     },
     {
       "id": "python-venv",
@@ -48,7 +52,7 @@
       "title": "Dépendances CocoaPods",
       "safety": "safe",
       "recovery": "pod install",
-      "match": { "directoryName": "Pods", "siblingFile": "Podfile" }
+      "match": { "directoryName": "Pods", "siblingFiles": ["Podfile"] }
     },
     {
       "id": "bundler-vendor",
@@ -56,7 +60,7 @@
       "title": "Gems Bundler",
       "safety": "safe",
       "recovery": "bundle install",
-      "match": { "directoryName": "vendor", "siblingFile": "Gemfile" }
+      "match": { "directoryName": "vendor", "siblingFiles": ["Gemfile"] }
     },
 
     {
@@ -65,7 +69,7 @@
       "title": "Cible de compilation Rust",
       "safety": "safe",
       "recovery": "cargo build",
-      "match": { "directoryName": "target", "siblingFile": "Cargo.toml" }
+      "match": { "directoryName": "target", "siblingFiles": ["Cargo.toml"] }
     },
     {
       "id": "typo3-var-cache",
@@ -81,7 +85,7 @@
       "title": "Build Next.js",
       "safety": "safe",
       "recovery": "npm run build",
-      "match": { "directoryName": ".next", "siblingFile": "package.json" }
+      "match": { "directoryName": ".next", "siblingFiles": ["package.json"] }
     },
     {
       "id": "gradle-build",

@@ -56,8 +56,10 @@ struct JunkScannerTests {
     @Test("Scoping to a folder reports that folder and nothing beside it")
     func scopedToSubtree() async throws {
         let fixture = try Fixture()
+        try fixture.file("projet-a/package-lock.json", bytes: 100)
         try fixture.file("projet-a/node_modules/pkg/index.js", bytes: 40_000)
         try fixture.file("projet-a/src/main.js", bytes: 500)
+        try fixture.file("projet-b/yarn.lock", bytes: 100)
         try fixture.file("projet-b/node_modules/pkg/index.js", bytes: 90_000)
 
         let store = await ScanEngine.scan(root: fixture.path).store
@@ -82,6 +84,7 @@ struct JunkScannerTests {
     @Test("The scoped root is never reported as junk itself")
     func scopedRootIsNotItsOwnFinding() async throws {
         let fixture = try Fixture()
+        try fixture.file("package-lock.json", bytes: 100)
         try fixture.file("node_modules/pkg/index.js", bytes: 40_000)
 
         let store = await ScanEngine.scan(root: fixture.path).store
@@ -121,6 +124,7 @@ struct JunkScannerTests {
         let fixture = try Fixture()
         // Scan the contents rather than collapsing them, so the rule engine has
         // a real directory to match on.
+        try fixture.file("app/package-lock.json", bytes: 100)
         try fixture.file("app/node_modules/left-pad/index.js", bytes: 60_000)
         try fixture.file("app/src/main.js", bytes: 500)
 
@@ -139,6 +143,7 @@ struct JunkScannerTests {
     @Test("Nested matches are reported once, not once per level")
     func nestedMatchesCollapse() async throws {
         let fixture = try Fixture()
+        try fixture.file("app/package-lock.json", bytes: 100)
         try fixture.file("app/node_modules/a/node_modules/b/index.js", bytes: 40_000)
         try fixture.file("app/node_modules/c/node_modules/d/index.js", bytes: 40_000)
 
@@ -149,6 +154,43 @@ struct JunkScannerTests {
         #expect(junk.findings.count == 1)
         // And the one finding carries the whole subtree's weight.
         #expect(junk.findings[0].bytes >= 80_000)
+    }
+
+    /// A `node_modules` is not always a project's dependencies: npm's global
+    /// prefix (`/opt/homebrew/lib/node_modules`, where `pm2` and `npm` live)
+    /// and every VS Code extension *are* one. Deleting them removes commands and
+    /// breaks the editor, and `npm install` gets nothing back — there is no
+    /// project to run it in. What a project has and they don't is a lockfile.
+    @Test("node_modules only counts as a project's when a lockfile sits beside it")
+    func nodeModulesNeedsALockfile() async throws {
+        let fixture = try Fixture()
+        // Global prefix: nothing beside it at all.
+        try fixture.file("lib/node_modules/pm2/index.js", bytes: 40_000)
+        // Editor extension: a manifest, but no lockfile.
+        try fixture.file("extensions/prettier/package.json", bytes: 100)
+        try fixture.file("extensions/prettier/node_modules/x/index.js", bytes: 40_000)
+        // A project, installed with yarn.
+        try fixture.file("projet/yarn.lock", bytes: 100)
+        try fixture.file("projet/node_modules/x/index.js", bytes: 40_000)
+
+        let junk = await report(for: fixture)
+        #expect(junk.findings.count == 1)
+        #expect(junk.findings.first?.path.hasSuffix("projet/node_modules") == true)
+    }
+
+    /// Global packages ship their own lockfiles — pm2 comes with `bun.lock` —
+    /// so the `node_modules` *inside* one passes the lockfile check. Descending
+    /// into the global prefix would offer it, and break pm2 from the inside.
+    @Test("Nothing inside an installed node_modules is offered either")
+    func noDescentIntoInstalledModules() async throws {
+        let fixture = try Fixture()
+        try fixture.file("lib/node_modules/pm2/bun.lock", bytes: 100)
+        try fixture.file("lib/node_modules/pm2/node_modules/x/index.js", bytes: 40_000)
+
+        let result = await ScanEngine.scan(
+            root: fixture.path, options: uncollapsed()
+        )
+        #expect(JunkScanner.scan(store: result.store).findings.isEmpty)
     }
 
     @Test("vendor only counts as Composer's when composer.json sits beside it")
@@ -194,6 +236,7 @@ struct JunkScannerTests {
     @Test("Deleted items drop out of the report")
     func deletedItemsExcluded() async throws {
         let fixture = try Fixture()
+        try fixture.file("app/package-lock.json", bytes: 100)
         try fixture.file("app/node_modules/left-pad/index.js", bytes: 60_000)
 
         let result = await ScanEngine.scan(
@@ -210,6 +253,7 @@ struct JunkScannerTests {
     @Test("Totals add up and nothing is counted twice")
     func totalsAreConsistent() async throws {
         let fixture = try Fixture()
+        try fixture.file("a/pnpm-lock.yaml", bytes: 100)
         try fixture.file("a/node_modules/x/f", bytes: 30_000)
         try fixture.file("b/Cargo.toml", bytes: 100)
         try fixture.file("b/target/f", bytes: 50_000)

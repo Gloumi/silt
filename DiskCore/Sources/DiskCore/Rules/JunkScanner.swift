@@ -101,7 +101,7 @@ public enum JunkScanner {
         struct Compiled {
             let rule: JunkRule
             let name: [UInt8]
-            let siblingFile: [UInt8]?
+            let siblingFiles: [[UInt8]]?
             let childFile: [UInt8]?
         }
         let compiled: [Compiled] = ruleSet.rules.compactMap { rule in
@@ -109,7 +109,7 @@ public enum JunkScanner {
             return Compiled(
                 rule: rule,
                 name: Array(name.utf8),
-                siblingFile: rule.match.siblingFile.map { Array($0.utf8) },
+                siblingFiles: rule.match.siblingFiles?.map { Array($0.utf8) },
                 childFile: rule.match.childFile.map { Array($0.utf8) }
             )
         }
@@ -118,15 +118,17 @@ public enum JunkScanner {
         var stack: [Int32] = [root]
         while let node = stack.popLast() {
             var matched = false
+            var namedLikeJunk = false
 
             // The subtree we were asked about is never itself the answer.
             if node != root, store.isDirectory(node), !claimed.contains(node) {
                 for candidate in compiled where store.hasName(node, candidate.name) {
-                    if let sibling = candidate.siblingFile {
+                    namedLikeJunk = true
+                    if let siblings = candidate.siblingFiles {
                         let parent = store.parent[Int(node)]
-                        guard store.children(of: parent)
-                            .contains(where: { store.hasName($0, sibling) })
-                        else { continue }
+                        guard store.children(of: parent).contains(where: { child in
+                            siblings.contains { store.hasName(child, $0) }
+                        }) else { continue }
                     }
                     if let child = candidate.childFile {
                         guard hasChildFile(
@@ -143,7 +145,13 @@ public enum JunkScanner {
 
             // Never look for junk inside junk: a `node_modules` full of nested
             // `node_modules` should be one finding, not four hundred.
-            guard !matched else { continue }
+            //
+            // Nor inside something that only *looks* like junk. A `node_modules`
+            // that failed its lockfile check is installed software — npm's
+            // global prefix, an editor extension — and the packages in it ship
+            // their own lockfiles, so their nested `node_modules` would pass the
+            // check and be offered, breaking the tool from the inside.
+            guard !matched, !namedLikeJunk else { continue }
             for child in store.children(of: node) where store.isDirectory(child) {
                 stack.append(child)
             }

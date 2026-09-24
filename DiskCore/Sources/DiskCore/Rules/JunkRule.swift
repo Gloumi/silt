@@ -17,9 +17,14 @@ public enum JunkSafety: String, Codable, Sendable {
 public struct JunkMatcher: Codable, Sendable {
     /// Any directory with this exact name, anywhere in the tree.
     public var directoryName: String?
-    /// Additionally require a file with this name *beside* the directory —
-    /// `vendor` only counts as Composer's if `composer.json` sits next to it.
-    public var siblingFile: String?
+    /// Additionally require at least one of these files *beside* the
+    /// directory — `vendor` only counts as Composer's if `composer.json` sits
+    /// next to it, and a `node_modules` only counts as a project's if a
+    /// lockfile does. That last one is what separates a project's dependencies
+    /// from a tool that *is* a `node_modules`: npm's global prefix, a VS Code
+    /// extension. Neither has a lockfile beside it, and deleting either breaks
+    /// something `npm install` cannot bring back.
+    public var siblingFiles: [String]?
     /// Additionally require this file *inside* the directory, which is how a
     /// Python virtualenv is identified regardless of what it is called.
     public var childFile: String?
