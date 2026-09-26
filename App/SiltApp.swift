@@ -261,7 +261,7 @@ struct ContentView: View {
         .sheet(item: Bindable(model).deletionPlanBox) { box in
             DeletionSheet(
                 plan: box.plan,
-                onCancel: { model.deletionPlan = nil },
+                onCancel: { model.cancelDeletion() },
                 onConfirm: { excluded in
                     Task { await model.confirmDeletion(excluding: excluded) }
                 }
@@ -399,6 +399,9 @@ struct ContentView: View {
 ///
 /// Shown after the fact rather than as an alert: the deletion is already
 /// reversible, so interrupting the user again would be ceremony without value.
+/// Where it is *not* reversible — a volume whose trash was probed and found not
+/// to move anything — the interruption happens before, in the sheet's second
+/// confirmation, which is exactly the difference this banner is built on.
 private struct DeletionBanner: View {
     let message: String
     let canUndo: Bool

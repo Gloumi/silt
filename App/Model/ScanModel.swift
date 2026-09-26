@@ -94,14 +94,92 @@ final class ScanModel {
     }
 
     /// Everything the confirmation sheet needs to describe a pending deletion.
+    ///
+    /// Its arrays are parallel — `requests`, `names`, `trashlessVolumes` — and
+    /// the sheet's withdrawals address them by index, which is why `marking`
+    /// rebuilds all three in one pass rather than filtering any of them.
     struct DeletionPlan {
         var requests: [SafeDeleter.Request]
         var names: [String]
         var totalBytes: Int64
         var cautions: [String]
         var refused: [String]
+        /// The volume each request lives on, aligned with `requests` and
+        /// non-nil only where that volume's trash was probed and found not to
+        /// move anything — so nil for everything on the startup disk, always.
+        /// The second confirmation names these; the sheet marks their rows.
+        var trashlessVolumes: [String?] = []
 
         var count: Int { requests.count }
+
+        /// The volume of a request, once the sheet's indices are in play.
+        /// Tolerant of a short array so that a plan built before the survey
+        /// landed still answers.
+        func trashlessVolume(at index: Int) -> String? {
+            trashlessVolumes.indices.contains(index)
+                ? trashlessVolumes[index] : nil
+        }
+
+        /// Volumes still in the batch whose trash does not work, in order and
+        /// without repeats — what the second confirmation has to name.
+        func trashlessVolumeNames(excluding excluded: Set<Int>) -> [String] {
+            var seen: Set<String> = []
+            return requests.indices.compactMap { index in
+                guard !excluded.contains(index),
+                      let volume = trashlessVolume(at: index),
+                      seen.insert(volume).inserted
+                else { return nil }
+                return volume
+            }
+        }
+
+        /// Re-reads the plan against what the volumes answered.
+        ///
+        /// A volume whose trash was watched failing to move anything turns its
+        /// requests permanent; a read-only volume drops them altogether. That
+        /// last one is not a trash problem: nothing can be removed from such a
+        /// volume at all, and making the user agree to an irreversible deletion
+        /// only to fail on EROFS would be the worst of the three answers.
+        func marking(_ survey: [String: VolumeTrash]) -> Self {
+            var marked = self
+            marked.requests = []
+            marked.names = []
+            marked.trashlessVolumes = []
+            marked.totalBytes = 0
+
+            for (index, request) in requests.enumerated() {
+                let name = names.indices.contains(index) ? names[index] : ""
+                switch survey[request.path]?.verdict {
+                case .readOnly:
+                    let volume = survey[request.path]?.volumeName ?? ""
+                    marked.refused.append(
+                        "\(name) — Le volume « \(volume) » est en lecture seule."
+                    )
+                case .unusable:
+                    marked.requests.append(.init(
+                        node: request.node, path: request.path,
+                        bytes: request.bytes, permanent: true
+                    ))
+                    marked.names.append(name)
+                    marked.trashlessVolumes.append(survey[request.path]?.volumeName)
+                    marked.totalBytes += request.bytes
+                case .usable, nil:
+                    marked.requests.append(request)
+                    marked.names.append(name)
+                    marked.trashlessVolumes.append(nil)
+                    marked.totalBytes += request.bytes
+                }
+            }
+            guard marked.requests.count != requests.count else { return marked }
+            // A caution about a request that left the batch would warn about
+            // something the sheet no longer shows. Names align with cautions by
+            // construction in `requestDeletion`.
+            let kept = Set(marked.names)
+            marked.cautions = marked.cautions.filter { caution in
+                kept.contains { caution.hasPrefix("\($0) — ") }
+            }
+            return marked
+        }
     }
 
     var presentation: Presentation = .sunburst {
@@ -582,6 +660,10 @@ final class ScanModel {
     ///
     /// The banner's undo, and only that: it dies with the launch. Anything that
     /// has to outlive the banner belongs in `restorable` below.
+    ///
+    /// Nil when the deletion reached no trash at all — a batch removed outright
+    /// on a volume that has none — so that no button is offered for a way back
+    /// that does not exist.
     private(set) var lastDeletion: DeletionReport?
     /// Everything this app has trashed that is still in a trash folder, newest
     /// first — the Corbeille tool's contents, and the durable route back once
@@ -597,6 +679,10 @@ final class ScanModel {
     private(set) var needsAppManagement = false
     /// Sizes captured before deletion; undo needs them to restore the roll-up.
     private var undoSizes: [Int32: (alloc: Int64, logical: Int64, files: Int32)] = [:]
+    /// Bumped by every request for a sheet and by every cancellation, so that a
+    /// volume survey landing late cannot present a batch the user has moved on
+    /// from — or re-open the sheet they just dismissed.
+    private var deletionRequestID = 0
 
     /// Report sizes as logical bytes rather than bytes on disk.
     var useLogicalSize = Preferences.shared.useLogicalSize {
@@ -1213,7 +1299,7 @@ final class ScanModel {
         }
 
         guard !plan.requests.isEmpty || !plan.refused.isEmpty else { return }
-        deletionPlan = plan
+        offer(plan)
     }
 
     /// Builds a plan from paths that were never part of any scanned tree —
@@ -1239,7 +1325,47 @@ final class ScanModel {
         }
 
         guard !plan.requests.isEmpty || !plan.refused.isEmpty else { return }
-        deletionPlan = plan
+        offer(plan)
+    }
+
+    /// Presents a plan, once the volumes it touches have said whether their
+    /// trash works.
+    ///
+    /// Immediate for the ordinary case, which is everything on the volume that
+    /// holds the home folder: its trash is `~/.Trash`, one rename away, and no
+    /// probe could tell us anything we do not already know. `statfs` has no I/O
+    /// behind it, so asking it per request costs microseconds here. Probing a
+    /// foreign volume is another matter — it writes a file, trashes it and
+    /// reads it back, which on a sleeping external disk is not a button press's
+    /// worth of time — so that path steps aside and presents when it lands.
+    private func offer(_ plan: DeletionPlan) {
+        deletionRequestID += 1
+        let id = deletionRequestID
+        let home = VolumeTrashProbe.homeMountPoint()
+        let foreign = plan.requests.contains {
+            VolumeTrashProbe.mount(of: $0.path)?.point != home
+        }
+        guard foreign else { deletionPlan = plan; return }
+
+        let paths = plan.requests.map(\.path)
+        Task {
+            let survey = await Task.detached {
+                VolumeTrashProbe.survey(paths: paths)
+            }.value
+            // A survey that lands after the user asked for something else, or
+            // changed their mind, describes a batch that no longer exists.
+            guard id == deletionRequestID else { return }
+            deletionPlan = plan.marking(survey)
+        }
+    }
+
+    /// The sheet's way out.
+    ///
+    /// A method rather than `deletionPlan = nil` at the call site, so that a
+    /// volume survey still in flight cannot re-present what was just dismissed.
+    func cancelDeletion() {
+        deletionRequestID += 1
+        deletionPlan = nil
     }
 
     /// `excluding` names the requests the user pulled back out on the recap
@@ -1270,7 +1396,7 @@ final class ScanModel {
                 )
             }
         }
-        let report = await Task.detached { SafeDeleter.moveToTrash(requests) }.value
+        let report = await Task.detached { SafeDeleter.delete(requests) }.value
 
         for item in report.trashed {
             if let node = item.node { result?.store.markDeleted(node) }
@@ -1282,8 +1408,13 @@ final class ScanModel {
         if let index = trail.firstIndex(where: removed.contains) {
             trail.removeSubrange(max(1, index)...)
         }
-        undoSizes = sizes
-        lastDeletion = report.trashed.isEmpty ? nil : report
+        // Undo only where undo exists. An outright removal has nothing to come
+        // back from, and a banner offering to put one back would answer
+        // "Élément supprimé sans passer par la corbeille." to every item it
+        // touched — the reasoning `reportSnapshotOutcome` applies wholesale.
+        let restorableNodes = Set(report.restorable.compactMap(\.node))
+        undoSizes = sizes.filter { restorableNodes.contains($0.key) }
+        lastDeletion = report.restorable.isEmpty ? nil : report
         remember(report.trashed)
         present(report)
         selection = []
@@ -1295,7 +1426,10 @@ final class ScanModel {
 
     func undoLastDeletion() async {
         guard let report = lastDeletion else { return }
-        let items = report.trashed
+        // Only what reached a trash. Handing `restore` an item that was removed
+        // outright would count it as a restoration failure, and the message
+        // would report a loss on something nobody ever promised to bring back.
+        let items = report.restorable
         let failures = await Task.detached { SafeDeleter.restore(items) }.value
 
         let failedPaths = Set(failures.map(\.path))
@@ -1507,7 +1641,10 @@ final class ScanModel {
     /// Trashes the bundle and whichever leftovers were ticked.
     ///
     /// Goes through `SafeDeleter` like everything else, so the deny list still
-    /// applies per path and the whole thing stays undoable.
+    /// applies per path and the whole thing stays undoable. Never permanent:
+    /// an app on a volume whose trash does not work is reported as stranded
+    /// rather than erased — this sheet has no second confirmation to offer, and
+    /// an uninstall is not the place to invent one.
     func uninstall(_ plan: UninstallPlan, keeping selected: Set<String>) async {
         var requests: [SafeDeleter.Request] = [
             .init(node: plan.node, path: plan.app.path, bytes: plan.app.bytes)
@@ -1530,7 +1667,7 @@ final class ScanModel {
         }
 
         let report = await Task.detached {
-            SafeDeleter.moveToTrash(requests)
+            SafeDeleter.delete(requests)
         }.value
 
         for item in report.trashed {
@@ -2421,15 +2558,27 @@ final class ScanModel {
         }
 
         var parts: [String] = []
-        if !report.trashed.isEmpty {
-            let bytes = report.reclaimedBytes.formatted(.byteCount(style: .file))
+        if !report.restorable.isEmpty {
+            let bytes = report.reclaimedOnEmptyingBytes
+                .formatted(.byteCount(style: .file))
             // Not "purgeables": that word now means the space macOS itself
             // holds back — snapshots and caches — and the Snapshots tool is
             // built around it. Trashed bytes are freed by emptying the trash,
             // which is a different gesture with a different button.
             parts.append(
-                "\(report.trashed.count) élément(s) à la corbeille — \(bytes) libérés en la vidant."
+                "\(report.restorable.count) élément(s) à la corbeille — \(bytes) libérés en la vidant."
             )
+        }
+        // Freed, full stop: these never went to a trash, so there is no second
+        // gesture left to make the space appear.
+        if !report.erased.isEmpty {
+            let bytes = report.reclaimedNowBytes.formatted(.byteCount(style: .file))
+            parts.append(
+                "\(report.erased.count) élément(s) supprimés définitivement — \(bytes) libérés."
+            )
+        }
+        if !report.restorable.isEmpty && !report.erased.isEmpty {
+            parts.append("« Annuler » ne peut remettre que les premiers.")
         }
         // The Finder route loses the Finder's own "Remettre" often enough that
         // saying nothing would leave the user believing in an undo that is not
@@ -2442,13 +2591,23 @@ final class ScanModel {
         if !report.refused.isEmpty {
             parts.append("\(report.refused.count) protégé(s).")
         }
-        if let failure = report.failures.first {
+        // Their own sentence, and out of the failure line below: a whole batch
+        // held up by one broken trash would otherwise name a single file and
+        // hide the rest behind "N échecs, dont…", which reads as N unrelated
+        // problems rather than the one that they are.
+        if !report.strandedByTrash.isEmpty {
+            parts.append(
+                "\(report.strandedByTrash.count) élément(s) n'ont pas pu être mis à la corbeille sur ce volume et sont restés en place."
+            )
+        }
+        let failures = report.failures.filter { !$0.isTrashUnusable }
+        if let failure = failures.first {
             let name = (failure.path as NSString).lastPathComponent
-            let others = report.failures.count - 1
+            let others = failures.count - 1
             parts.append(
                 others == 0
                     ? "Échec : \(name) — \(failure.reason)"
-                    : "\(report.failures.count) échecs, dont \(name) — \(failure.reason)"
+                    : "\(failures.count) échecs, dont \(name) — \(failure.reason)"
             )
             if failure.isPermissionDenied,
                let owner = foreignOwner(of: failure.path) {

@@ -68,6 +68,8 @@ public enum TrashLedger {
     ///
     /// Items removed outright are dropped: with no trash path there is nothing
     /// to put back, and listing them would promise a restore that cannot happen.
+    /// Long a theoretical case, real since deletion on a volume whose trash was
+    /// probed and found not to move anything became an outright removal.
     public static func record(
         _ items: [TrashedItem],
         at date: Date,

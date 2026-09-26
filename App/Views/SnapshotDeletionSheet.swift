@@ -3,10 +3,11 @@ import SwiftUI
 
 /// Last stop before a snapshot goes, and deliberately not `DeletionSheet`.
 ///
-/// Everything else in Silt goes to the trash and can be put back — the other
-/// sheet says so in as many words, and it is true. A snapshot has no trash: it
-/// is unlinked from the volume and gone. Reusing the reassuring sheet for an
-/// irreversible act would be the one lie the app cannot afford.
+/// A snapshot has no trash: it is unlinked from the volume and gone. The other
+/// sheet only reaches that ground after probing a volume and watching its trash
+/// fail, and it says so item by item; here it is the whole point of the tool,
+/// every time, with no half of the batch to put back. Reusing a sheet built
+/// around a way back would be the one lie the app cannot afford.
 struct SnapshotDeletionSheet: View {
     let request: SnapshotsModel.Request
     let onCancel: () -> Void

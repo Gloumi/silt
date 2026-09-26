@@ -133,6 +133,98 @@ struct DenyListTests {
     }
 }
 
+@Suite("Volume trash")
+struct VolumeTrashTests {
+
+    private func mount(
+        _ point: String, fileSystem: String = "apfs",
+        readOnly: Bool = false, local: Bool = true
+    ) -> VolumeTrashProbe.Mount {
+        .init(
+            point: point, fileSystem: fileSystem,
+            isReadOnly: readOnly, isLocal: local
+        )
+    }
+
+    /// The branch that keeps a probe file from ever landing on a system volume
+    /// — and the reason the counter, not just the verdict, is asserted.
+    @Test("The home volume answers without being probed")
+    func homeVolumeIsUsableUnprobed() {
+        var probes = 0
+        let verdict = VolumeTrashProbe.decide(
+            mount: mount("/System/Volumes/Data"),
+            homeMountPoint: "/System/Volumes/Data",
+            probe: { probes += 1; return .leftInPlace }
+        )
+        #expect(verdict == .usable)
+        #expect(probes == 0)
+    }
+
+    @Test("A read-only volume is neither trashable nor erasable")
+    func readOnlyIsItsOwnVerdict() {
+        // `/` itself is this case: apfs, local, and mounted read-only.
+        #expect(
+            VolumeTrashProbe.decide(
+                mount: mount("/", readOnly: true),
+                homeMountPoint: "/System/Volumes/Data",
+                probe: { .trashed }
+            ) == .readOnly
+        )
+    }
+
+    @Test("Only a probe that watched the original stay put allows erasing")
+    func leftInPlaceIsTheOnlyRouteToUnusable() {
+        #expect(
+            VolumeTrashProbe.decide(
+                mount: mount("/Volumes/Stick", fileSystem: "exfat"),
+                homeMountPoint: "/System/Volumes/Data",
+                probe: { .leftInPlace }
+            ) == .unusable
+        )
+    }
+
+    /// The false negative that matters: an exFAT stick can carry a perfectly
+    /// good `.Trashes`, and condemning it by filesystem type would turn a
+    /// reversible deletion into an irreversible one.
+    @Test("A foreign volume whose trash works keeps its trash")
+    func workingTrashSurvivesItsFilesystemType() {
+        for type in ["exfat", "msdos", "ntfs", "smbfs"] {
+            #expect(
+                VolumeTrashProbe.decide(
+                    mount: mount("/Volumes/Stick", fileSystem: type, local: false),
+                    homeMountPoint: "/System/Volumes/Data",
+                    probe: { .trashed }
+                ) == .usable,
+                "\(type) devrait garder sa corbeille"
+            )
+        }
+    }
+
+    @Test("Knowing nothing authorises nothing")
+    func couldNotTestFallsBackToTheTrash() {
+        #expect(
+            VolumeTrashProbe.decide(
+                mount: mount("/Volumes/Share", fileSystem: "smbfs", local: false),
+                homeMountPoint: "/System/Volumes/Data",
+                probe: { .couldNotTest }
+            ) == .usable
+        )
+    }
+
+    /// The real thing, in a real folder on the volume the tests already run on.
+    /// Slow-ish, and the only test that exercises the code that will run.
+    @Test("The live probe finds a working trash and cleans up after itself")
+    func liveProbeLeavesNothingBehind() throws {
+        let fixture = try Fixture()
+        #expect(VolumeTrashProbe.probe(in: fixture.path) == .trashed)
+
+        let residue = try FileManager.default.contentsOfDirectory(
+            atPath: fixture.path
+        )
+        #expect(!residue.contains { $0.hasPrefix(VolumeTrashProbe.probePrefix) })
+    }
+}
+
 @Suite("Safe deleter")
 struct SafeDeleterTests {
 
@@ -141,7 +233,7 @@ struct SafeDeleterTests {
         let fixture = try Fixture()
         let file = try fixture.file("junk.bin", bytes: 4_096)
 
-        let report = SafeDeleter.moveToTrash([
+        let report = SafeDeleter.delete([
             .init(node: 1, path: file.path, bytes: 4_096)
         ])
         #expect(report.failures.isEmpty)
@@ -157,7 +249,7 @@ struct SafeDeleterTests {
 
     @Test("Refuses a protected path even when asked directly")
     func refusesProtectedPath() {
-        let report = SafeDeleter.moveToTrash([
+        let report = SafeDeleter.delete([
             .init(node: 1, path: "/System/Library", bytes: 1)
         ])
         #expect(report.trashed.isEmpty)
@@ -165,12 +257,147 @@ struct SafeDeleterTests {
         #expect(FileManager.default.fileExists(atPath: "/System/Library"))
     }
 
+    /// The deny list sits ahead of the permanent flag, and this is the test
+    /// that says so: a protected path is protected all the more when what is
+    /// being asked for cannot be undone.
+    @Test("The deny list outranks the permanent flag")
+    func denyListOutranksPermanence() {
+        let report = SafeDeleter.delete([
+            .init(node: 1, path: "/System/Library", bytes: 1, permanent: true)
+        ])
+        #expect(report.trashed.isEmpty)
+        #expect(report.refused.count == 1)
+        #expect(FileManager.default.fileExists(atPath: "/System/Library"))
+    }
+
+    @Test("A permanent request goes nowhere it could be recovered from")
+    func permanentLeavesNoTrace() throws {
+        let fixture = try Fixture()
+        let file = try fixture.file("gone.bin", bytes: 2_048)
+
+        let report = SafeDeleter.delete([
+            .init(node: 1, path: file.path, bytes: 2_048, permanent: true)
+        ])
+        #expect(report.failures.isEmpty)
+        #expect(report.trashed.count == 1)
+        #expect(report.trashed[0].trashPath == nil)
+        #expect(report.erased.count == 1)
+        #expect(report.restorable.isEmpty)
+        #expect(report.reclaimedNowBytes == 2_048)
+        #expect(report.reclaimedOnEmptyingBytes == 0)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+
+        // Nothing downstream may offer it back.
+        #expect(TrashLedger.record(report.trashed, at: Date(), into: []).isEmpty)
+        #expect(SafeDeleter.restore(report.trashed).count == 1)
+    }
+
+    @Test("A permanent request takes a whole folder with it")
+    func permanentRemovesSubtrees() throws {
+        let fixture = try Fixture()
+        try fixture.file("doomed/deep/inside.bin", bytes: 1_000)
+        let folder = fixture.path + "/doomed"
+
+        let report = SafeDeleter.delete([
+            .init(node: 1, path: folder, bytes: 1_000, permanent: true)
+        ])
+        #expect(report.trashed.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: folder))
+    }
+
+    /// The bug this whole route exists for, staged: the trash reports success
+    /// and the original is still there.
+    @Test("A trash that only copied is reported, not counted")
+    func lyingTrashIsCaught() throws {
+        let fixture = try Fixture()
+        let file = try fixture.file("copied.bin", bytes: 1_024)
+
+        var strays: [String] = []
+        let report = SafeDeleter.delete(
+            [.init(node: 1, path: file.path, bytes: 1_024)],
+            presence: { path in
+                strays.append(path)
+                return path == file.path ? .present : .absent
+            }
+        )
+        #expect(report.trashed.isEmpty)
+        #expect(report.failures.count == 1)
+        #expect(report.failures[0].isTrashUnusable)
+        #expect(report.strandedByTrash.count == 1)
+        #expect(strays == [file.path])
+        // The copy the trash made was cleared away rather than left to take up
+        // the space twice.
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// The guard on the one deletion the user never asked for by name.
+    @Test("Stray copies are only ever removed from inside a trash")
+    func strayCopiesStayInsideTheTrash() throws {
+        let fixture = try Fixture()
+        let outside = try fixture.file("elsewhere.bin", bytes: 16)
+        #expect(!SafeDeleter.discardStrayCopy(at: outside.path))
+        #expect(FileManager.default.fileExists(atPath: outside.path))
+
+        let inside = try fixture.file(".Trashes/501/decoy.bin", bytes: 16)
+        #expect(SafeDeleter.discardStrayCopy(at: inside.path))
+        #expect(!FileManager.default.fileExists(atPath: inside.path))
+    }
+
+    @Test("A mixed batch reports both halves apart")
+    func mixedBatchSplitsItsReport() throws {
+        let fixture = try Fixture()
+        let kept = try fixture.file("trashed.bin", bytes: 100)
+        let erased = try fixture.file("erased.bin", bytes: 200)
+
+        let report = SafeDeleter.delete([
+            .init(node: 1, path: kept.path, bytes: 100),
+            .init(node: 2, path: erased.path, bytes: 200, permanent: true),
+        ])
+        #expect(report.failures.isEmpty)
+        #expect(report.restorable.count == 1)
+        #expect(report.erased.count == 1)
+        #expect(report.reclaimedBytes == 300)
+        #expect(report.reclaimedNowBytes == 200)
+        #expect(report.reclaimedOnEmptyingBytes == 100)
+
+        if let trashPath = report.restorable[0].trashPath {
+            try? FileManager.default.removeItem(atPath: trashPath)
+        }
+    }
+
+    /// No Finder fallback, no elevation: a permission error on the permanent
+    /// route stays a failure the user is told about.
+    @Test("A refused permanent deletion stays refused")
+    func permanentDoesNotEscalate() throws {
+        let fixture = try Fixture()
+        let file = try fixture.file("locked/inside.bin", bytes: 32)
+        let folder = fixture.path + "/locked"
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: folder
+        )
+        // Put the write bit back whatever happens, or the fixture cannot clean
+        // itself up and leaves the directory behind in the temp folder.
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: folder
+            )
+        }
+
+        let report = SafeDeleter.delete([
+            .init(node: 1, path: file.path, bytes: 32, permanent: true)
+        ])
+        #expect(report.trashed.isEmpty)
+        #expect(report.failures.count == 1)
+        #expect(report.failures[0].isPermissionDenied)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
     @Test("Restoring never overwrites something new at the old path")
     func restoreDoesNotOverwrite() throws {
         let fixture = try Fixture()
         let file = try fixture.file("contested.bin", bytes: 1_024)
 
-        let report = SafeDeleter.moveToTrash([
+        let report = SafeDeleter.delete([
             .init(node: 1, path: file.path, bytes: 1_024)
         ])
         #expect(report.trashed.count == 1)
