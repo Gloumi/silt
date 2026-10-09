@@ -67,6 +67,37 @@ struct NodeList<Row: View, MenuItems: View>: View {
             primaryAction(selection)
             return .handled
         }
+        .takesKeyboardOnAppear()
+    }
+}
+
+extension View {
+    /// Hands the keyboard to a list as soon as it is on screen, the way the
+    /// duplicates list already did.
+    ///
+    /// Without it nothing in the window held the keyboard until a row had been
+    /// clicked: ↑↓ went nowhere, and the selection — set from the inspector, a
+    /// chart or a reveal — was drawn in the grey AppKit keeps for a table that
+    /// is not first responder, instead of the accent colour of the Finder.
+    ///
+    /// A caret in the search field keeps the keyboard: typing there rebuilds
+    /// the large-files extract, whose list then appears again, and taking focus
+    /// at that point would swallow the next keystroke.
+    func takesKeyboardOnAppear() -> some View {
+        modifier(TakesKeyboardOnAppear())
+    }
+}
+
+private struct TakesKeyboardOnAppear: ViewModifier {
+    @FocusState private var isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($isFocused)
+            .onAppear {
+                guard !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
+                isFocused = true
+            }
     }
 }
 

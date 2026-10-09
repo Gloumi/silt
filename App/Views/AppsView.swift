@@ -50,13 +50,43 @@ struct AppsView: View {
                         apps: apps, item: item,
                         fraction: Double(item.total)
                             / Double(max(1, apps.items.map(\.total).max() ?? 1)),
-                        onUninstall: { uninstall(item) }
+                        isSelected: apps.selection == item.id
                     )
                     .listRowSeparator(.hidden)
                 }
                 .listStyle(.inset)
+                // On the List rather than on each row, as in NodeList: a row
+                // menu with its content shape sat in front of the table and
+                // took the clicks it needs to select and to take the keyboard.
+                .contextMenu(forSelectionType: String.self) { paths in
+                    if let item = item(at: paths) {
+                        Button("Désinstaller…") { uninstall(item) }
+                            .disabled(apps.isSelf(item))
+                        Button("Ouvrir") { open(item) }
+                        Button("Afficher dans le Finder") { revealInFinder(item) }
+                    }
+                }
+                .takesKeyboardOnAppear()
             }
         }
+    }
+
+    private func item(at paths: Set<String>) -> AppsModel.Item? {
+        guard paths.count == 1, let path = paths.first else { return nil }
+        return apps.items.first { $0.id == path }
+    }
+
+    private func revealInFinder(_ item: AppsModel.Item) {
+        NSWorkspace.shared.activateFileViewerSelecting(
+            [URL(fileURLWithPath: item.app.path)]
+        )
+    }
+
+    private func open(_ item: AppsModel.Item) {
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: item.app.path),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
     }
 
     private func uninstall(_ item: AppsModel.Item) {
@@ -127,7 +157,7 @@ private struct AppRow: View {
     let apps: AppsModel
     let item: AppsModel.Item
     let fraction: Double
-    let onUninstall: () -> Void
+    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -165,20 +195,7 @@ private struct AppRow: View {
             .frame(width: 118, alignment: .trailing)
         }
         .padding(.vertical, 3)
-        .background(alignment: .leading) {
-            GeometryReader { geometry in
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(.proportionBar)
-                    .frame(width: geometry.size.width * min(1, max(0, fraction)))
-            }
-        }
-        .contentShape(.rect)
-        .contextMenu {
-            Button("Désinstaller…", action: onUninstall)
-                .disabled(apps.isSelf(item))
-            Button("Ouvrir", action: open)
-            Button("Afficher dans le Finder", action: revealInFinder)
-        }
+        .proportionBar(fraction, isSelected: isSelected)
     }
 
     /// The identifier is what the uninstaller matches on, so showing it is
@@ -203,18 +220,6 @@ private struct AppRow: View {
         return "dont " + Format.bytes(leftovers) + " liés"
     }
 
-    private func revealInFinder() {
-        NSWorkspace.shared.activateFileViewerSelecting(
-            [URL(fileURLWithPath: item.app.path)]
-        )
-    }
-
-    private func open() {
-        NSWorkspace.shared.openApplication(
-            at: URL(fileURLWithPath: item.app.path),
-            configuration: NSWorkspace.OpenConfiguration()
-        )
-    }
 }
 
 private struct RunningBadge: View {
