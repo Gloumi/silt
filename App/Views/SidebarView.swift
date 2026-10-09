@@ -7,6 +7,7 @@ struct SidebarView: View {
     /// The volume whose detail popover is open, if any.
     @State private var detailVolume: VolumeInfo?
     @Bindable private var preferences = Preferences.shared
+    @Environment(\.openWindow) private var openWindow
     private let locations = QuickLocation.standard()
 
     var body: some View {
@@ -135,6 +136,24 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // The settings within reach of the pointer, where Mail and Notes keep
+        // their own bottom-of-sidebar controls. ⌘, stays the keyboard's way in.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack {
+                Spacer()
+                Button { openWindow(id: SiltApp.settingsWindow) } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14))
+                        .frame(width: 24, height: 24)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Réglages")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
         // Centred over the window rather than attached to the row: the
         // breakdown is a page of figures, and a popover hanging off a 4 pt
         // gauge in a 240 pt column had nowhere to put them.
