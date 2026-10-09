@@ -10,6 +10,8 @@ Silt vise les deux bouts : un moteur très rapide et une interface qui ressemble
 
 ## Installation
 
+Silt demande **macOS 15 Sequoia** ou plus récent. L'interface est en français.
+
 ```sh
 brew tap Gloumi/silt https://github.com/Gloumi/silt
 brew install --cask --no-quarantine silt
@@ -47,19 +49,46 @@ c'est de compiler soi-même — voir [Développement](#développement).
 
 ## Ce que ça fait
 
-- **Quatre vues** sur la même arborescence — anneaux, blocs, liste triée,
-  nettoyage. Les anneaux s'adaptent à la profondeur réelle du dossier au lieu de
-  laisser les niveaux inutilisés en blanc.
-- **Suppression sécurisée** : tout passe par la corbeille, une liste
-  d'interdiction protège le système, et l'annulation restaure.
-- **Détection de gras** orientée développement : 49 règles — `node_modules`,
-  DerivedData, simulateurs iOS, caches d'outils, builds de tous les frameworks
-  JS courants, caches Python. Sur une machine de dev réelle : 62 Go repérés.
-  Le nettoyage se limite à un dossier depuis l'inspecteur.
-- **Désinstallation d'applications** : retrouve ce qu'une app laisse dans
-  `~/Library` — caches, conteneurs, préférences, état sauvegardé. Chaque
-  trouvaille indique **comment** elle a été rapprochée, et seul l'indiscutable
-  est coché ([pourquoi](#désinstaller-large-sans-emporter-le-voisin)).
+**Voir où va l'espace**
+
+- **Cinq vues** sur la même arborescence : anneaux, blocs, liste triée,
+  fichiers volumineux (les plus gros d'un sous-arbre, à plat) et doublons. Les
+  anneaux s'adaptent à la profondeur réelle du dossier au lieu de laisser les
+  niveaux inutilisés en blanc.
+- **Recherche** : un seul champ filtre toutes les vues à la fois, tailles
+  recalculées.
+- **Couleur par âge** : les dates de modification sont conservées, et les vues
+  peuvent se colorer par ancienneté plutôt que par dossier.
+- **L'espace qu'aucun scan ne voit** : les jauges de volume affichent le même
+  chiffre que le Finder et montrent à part ce que macOS s'est réservé.
+
+**Récupérer de la place**
+
+- **Caches et résidus** : 49 règles orientées développement — `node_modules`,
+  DerivedData, simulateurs iOS, caches d'outils, builds des frameworks JS
+  courants, caches Python. Sur une machine de dev réelle : 62 Go repérés.
+- **Doublons** : on choisit la copie qui reste, pas celles qui partent. Le
+  disque n'est lu que là où les tailles ne suffisent plus à trancher, un
+  fichier iCloud non téléchargé n'est jamais rapatrié pour être comparé, et un
+  clone APFS n'est compté qu'une fois ([détails](#trouver-les-doublons-sans-lire-tout-le-disque)).
+- **Applications** : la liste de tout ce qui est installé, triée par la place
+  réellement occupée, et une désinstallation qui retrouve ce qu'une app laisse
+  dans `~/Library`. Seul l'indiscutable est coché
+  ([pourquoi](#désinstaller-large-sans-emporter-le-voisin)).
+- **Redémarrage** : ce qu'un redémarrage libérerait (swap, caches système de
+  l'utilisateur), et la suppression de ce qui peut l'être tout de suite.
+- **Snapshots** : les instantanés APFS locaux, cause la plus fréquente de
+  l'espace « fantôme », et leur suppression avec le mot de passe administrateur.
+
+**Supprimer sans regret**
+
+- Tout passe par la corbeille, une liste d'interdiction protège le système, et
+  l'outil **Corbeille** garde la trace de ce que Silt y a mis pour le remettre
+  en place, même après avoir quitté l'app.
+- Une suppression est vérifiée après coup : sur certains volumes externes, la
+  corbeille se contente de copier — Silt le détecte, le dit, et ne compte pas
+  l'espace comme libéré. Une suppression définitive, quand aucune corbeille
+  n'est possible, est annoncée ligne par ligne et confirmée deux fois.
 - **Les scans restent en mémoire** : revenir sur un volume déjà analysé est
   instantané, et l'actualisation est un geste explicite (⇧⌘R).
 
@@ -102,8 +131,10 @@ Mesuré sur un MacBook 10 cœurs : **2,4 millions de fichiers en 15 s**, soit
 
 ## Limites connues
 
-- Les **clones APFS** (fichiers partageant des blocs) sont comptés plusieurs
-  fois. Les détecter demanderait un appel par bloc ; DaisyDisk a la même limite.
+- Dans les **totaux du scan**, un clone APFS (fichier partageant ses blocs avec
+  un autre, ce que produit ⌘D dans le Finder) compte à chaque copie, comme avec
+  `du`. Seule la vue Doublons mesure les blocs réellement partagés : le faire
+  pendant le scan coûterait un appel système par fichier.
 - L'écart entre le total d'un scan et l'espace libre du Finder vient de l'espace
   qu'**macOS s'est réservé** — ce qu'il appelle « purgeable » — et qu'aucun parcours
   de fichiers ne peut voir. Les jauges de volume l'affichent désormais, et l'outil
@@ -117,6 +148,8 @@ Mesuré sur un MacBook 10 cœurs : **2,4 millions de fichiers en 15 s**, soit
   pas rétroactivement contre le reste du scan.
 
 ## Développement
+
+Il faut Xcode 26 ou plus récent (Swift 6) et [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```sh
 brew install xcodegen
@@ -171,6 +204,36 @@ sinon cette dernière ne s'appliquera jamais. C'est arrivé : `generic-cache`
 placée avant `.cache/huggingface` faisait passer 464 Mo de modèles pour un cache
 générique « sans risque ». Un test vérifie l'invariant sur le fichier livré.
 
+### Trouver les doublons sans lire tout le disque
+
+Comparer des contenus est la seule partie de l'app qui lit le corps des
+fichiers plutôt que leurs métadonnées ; tout hacher reviendrait à relire des
+centaines de gigaoctets pour rien. Les preuves sont donc dépensées par ordre de
+coût :
+
+1. **La taille**, gratuite puisque le scan l'a déjà mesurée. Une taille vue une
+   seule fois ne peut être le doublon de rien.
+2. **Les 128 premiers Kio**, qui séparent presque tout ce qui pèse le même
+   poids par hasard.
+3. **Le contenu entier**, pour ce qui reste seulement.
+
+Trois cas faussent les chiffres si on ne les traite pas :
+
+- **Liens durs** : deux chemins vers le même inode partagent leurs octets ;
+  en supprimer un ne libère rien. Ils sont repliés avant toute lecture.
+- **Clones APFS** : un clone a son propre inode et la taille pleine pour `du`,
+  mais ses blocs restent partagés. Silt les identifie par l'emplacement
+  physique de leurs blocs (`F_LOG2PHYS_EXT`), sur le descripteur déjà ouvert
+  pour le hachage — un `fcntl` par fichier, aucune lecture en plus.
+- **Fichiers iCloud évincés** : ils annoncent leur taille logique mais
+  n'occupent rien sur le disque. Les hacher les téléchargerait, pour remplir le
+  disque qu'on cherche à vider. Ils sont exclus, et le résumé le dit.
+
+La copie conservée par défaut est la plus récente **hors des stockages gérés**
+par une application : un gestionnaire de presse-papiers garde une copie plus
+récente que le document d'origine, et « garder la plus récente » jetterait le
+fichier de l'utilisateur pour préserver un cache.
+
 ### Désinstaller large sans emporter le voisin
 
 Un `.app` ne représente presque jamais la place qu'une application occupe. Silt
@@ -199,4 +262,4 @@ supprimer.
 
 ## Licence
 
-MIT.
+MIT — voir [LICENSE](LICENSE).
