@@ -26,7 +26,7 @@ cask "silt" do
   desc "Disk space analyser with sunburst and treemap views"
   homepage "https://github.com/Gloumi/silt"
 
-  depends_on macos: ">= :sequoia"
+  depends_on macos: :sequoia
 
   app "Silt.app"
 
