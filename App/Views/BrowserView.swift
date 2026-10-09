@@ -45,13 +45,9 @@ struct BrowserView: View {
                 // tree here would attach it to the wrong name.
                 EmptyStateView(model: model)
             } else if model.store != nil {
-                loadedContent.overlay(alignment: .top) {
-                    // The tree is already worth looking at — show it growing,
-                    // with the counters demoted to a strip.
-                    if case .scanning(let progress) = model.phase {
-                        ScanStrip(progress: progress) { model.cancel() }
-                    }
-                }
+                // The tree is already worth looking at — show it growing, with
+                // the counters demoted to the status bar.
+                loadedContent
             } else {
                 switch model.phase {
                 case .scanning(let progress):
@@ -358,7 +354,11 @@ private struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if let mask = model.searchMask {
+            if case .scanning(let progress) = model.phase {
+                // Down here rather than floating over the top of the view, where
+                // it sat on the breadcrumb and on the tiles being drawn.
+                ScanProgressLabel(progress: progress) { model.cancel() }
+            } else if let mask = model.searchMask {
                 // The total on the right is already the retained part, which on
                 // its own reads as the folder having shrunk. Say what it is a
                 // part of.
@@ -447,30 +447,24 @@ private struct EmptyStateView: View {
     }
 }
 
-/// Slim live counter shown over the growing tree.
-private struct ScanStrip: View {
+/// Live counter shown in the status bar while the tree grows.
+private struct ScanProgressLabel: View {
     let progress: ScanProgress
     let onCancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
-            ProgressView().controlSize(.small)
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.mini)
             Text("\(Format.count(progress.filesSeen)) fichiers")
                 .monospacedDigit()
                 .contentTransition(.numericText())
+            Text("·")
             Text(Format.bytes(progress.bytesSeen))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
             Button("Annuler", action: onCancel)
-                .controlSize(.small)
+                .controlSize(.mini)
                 .keyboardShortcut(.escape, modifiers: [])
         }
-        .font(.caption)
-        .padding(.horizontal, 11)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: .capsule)
-        .shadow(radius: 6, y: 2)
-        .padding(.top, 10)
         .animation(.default, value: progress.filesSeen)
     }
 }
