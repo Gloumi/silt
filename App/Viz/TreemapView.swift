@@ -77,6 +77,12 @@ struct TreemapView: View {
             .onChange(of: model.treeVersion) { rebuild(in: lastSize) }
             .onChange(of: model.searchVersion) { rebuild(in: lastSize) }
         }
+        .chartKeyboard(
+            model: model,
+            nodes: tiles.filter { $0.depth == 1 }
+                .sorted { $0.siblingIndex < $1.siblingIndex }
+                .compactMap(\.node)
+        )
     }
 
     private func rebuild(in size: CGSize) {

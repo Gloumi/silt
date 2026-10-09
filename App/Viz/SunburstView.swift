@@ -115,6 +115,12 @@ struct SunburstView: View {
         // Not animated: a filter is not a drill, and morphing the arcs into a
         // narrower tree reads as if we had navigated somewhere.
         .onChange(of: model.searchVersion) { rebuild(animated: false) }
+        .chartKeyboard(
+            model: model,
+            nodes: arcs.filter { $0.ring == 1 }
+                .sorted { $0.siblingIndex < $1.siblingIndex }
+                .compactMap(\.node)
+        )
     }
 
     // MARK: - Layout lifecycle
