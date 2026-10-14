@@ -6,7 +6,9 @@ import SwiftUI
 /// Two gestures, because Silt arrives two ways. A cask install is upgraded by
 /// Homebrew — downloading the DMG over it would leave `brew` believing in a
 /// version that is no longer there. A DMG install goes back to the release
-/// page, with the Gatekeeper detour spelled out since the build is unsigned.
+/// page. Both end with the same Gatekeeper detour, since the build is
+/// unsigned: Homebrew quarantines what it downloads, and no longer has a
+/// `--no-quarantine` to say otherwise (Homebrew 7 rejects the option).
 struct UpdateSheet: View {
     let release: Release
     let onDismiss: () -> Void
@@ -33,6 +35,10 @@ struct UpdateSheet: View {
             Link("Notes de version", destination: release.page)
 
             if viaHomebrew { homebrew } else { download }
+
+            Text("La build n'étant pas signée, macOS refusera le premier lancement : ouvrez alors Réglages Système › Confidentialité et sécurité, et cliquez sur « Ouvrir quand même ».")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text("Après la mise à jour, macOS retire à Silt l'accès complet au disque. Silt vous guidera pour le lui rendre.")
                 .font(.callout)
@@ -84,7 +90,7 @@ struct UpdateSheet: View {
     }
 
     private var download: some View {
-        Text("Téléchargez le DMG et remplacez Silt dans Applications. La build n'étant pas signée, macOS refusera le premier lancement : ouvrez alors Réglages Système › Confidentialité et sécurité, et cliquez sur « Ouvrir quand même ».")
+        Text("Téléchargez le DMG et remplacez Silt dans Applications.")
             .font(.callout)
             .fixedSize(horizontal: false, vertical: true)
     }

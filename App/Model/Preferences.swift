@@ -159,7 +159,6 @@ final class Preferences {
 
     func clearRecentSearches() {
         recentSearches = []
-        checksForUpdates = true
     }
 
     /// Folders the user pinned to the sidebar, in the order they added them.
@@ -365,6 +364,7 @@ final class Preferences {
         duplicateThresholdBytes = Self.defaultDuplicateThreshold
         duplicateFolderThresholdBytes = Self.defaultDuplicateFolderThreshold
         recentSearches = []
+        checksForUpdates = true
     }
 
     /// Scan options matching the current preferences.
