@@ -118,6 +118,7 @@ final class Preferences {
         static let recentSearches = "recentSearches"
         static let duplicateThreshold = "duplicateSizeThreshold"
         static let duplicateFolderThreshold = "duplicateFolderSizeThreshold"
+        static let checksForUpdates = "checksForUpdates"
     }
 
     /// Both thresholds are plain byte counts, which is what the three-way menus
@@ -158,6 +159,7 @@ final class Preferences {
 
     func clearRecentSearches() {
         recentSearches = []
+        checksForUpdates = true
     }
 
     /// Folders the user pinned to the sidebar, in the order they added them.
@@ -292,14 +294,23 @@ final class Preferences {
     var hasSeenWelcome: Bool {
         didSet { UserDefaults.standard.set(hasSeenWelcome, forKey: Key.seenWelcome) }
     }
+    /// The daily request to GitHub. On by default: an update nobody hears of is
+    /// one nobody installs, and the request carries nothing but the version.
+    var checksForUpdates: Bool {
+        didSet { UserDefaults.standard.set(checksForUpdates, forKey: Key.checksForUpdates) }
+    }
 
     private init() {
         let defaults = UserDefaults.standard
-        defaults.register(defaults: [Key.collapseDependencies: true])
+        defaults.register(defaults: [
+            Key.collapseDependencies: true,
+            Key.checksForUpdates: true,
+        ])
         useLogicalSize = defaults.bool(forKey: Key.logicalSize)
         descendIntoPackages = defaults.bool(forKey: Key.descendPackages)
         collapseDependencies = defaults.bool(forKey: Key.collapseDependencies)
         hasSeenWelcome = defaults.bool(forKey: Key.seenWelcome)
+        checksForUpdates = defaults.bool(forKey: Key.checksForUpdates)
         appearance = defaults.string(forKey: Key.appearance)
             .flatMap(AppearanceSetting.init(rawValue:)) ?? .system
         customLocations = defaults.stringArray(forKey: Key.customLocations) ?? []

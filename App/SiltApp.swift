@@ -25,6 +25,9 @@ struct SiltApp: App {
                 // something is still waiting to be put back — the tool itself
                 // may never be opened, and that count is the only hint.
                 .task { await model.refreshRestorable() }
+                // Owns its own cadence; calling it again when the window is
+                // reopened is a no-op.
+                .task { UpdateChecker.shared.start() }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
 
