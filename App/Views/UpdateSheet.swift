@@ -27,7 +27,7 @@ struct UpdateSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Silt \(release.displayVersion) est disponible")
                         .font(.title3.weight(.semibold))
-                    Text("Vous utilisez la \(checker.currentVersionText) · publiée le \(release.publishedAt.formatted(date: .long, time: .omitted))")
+                    Text("Publiée le \(release.publishedAt.formatted(date: .long, time: .omitted)) · vous utilisez la version \(checker.currentVersionText)")
                         .foregroundStyle(.secondary)
                 }
             }

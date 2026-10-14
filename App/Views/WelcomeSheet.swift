@@ -82,7 +82,7 @@ struct WelcomeSheet: View {
         VStack(alignment: .leading, spacing: 5) {
             step(1, "Ouvrez Réglages Système › Confidentialité et sécurité › Accès complet au disque.")
             step(2, afterUpdate
-                 ? "Silt y est encore coché, mais l'autorisation visait l'ancienne version : retirez Silt avec −, puis remettez-le avec + ou en le faisant glisser depuis le Finder."
+                 ? "L'app y est encore cochée, mais l'autorisation visait l'ancienne version : retirez-la avec −, puis remettez-la avec + ou en la faisant glisser depuis le Finder."
                  : "Activez Silt dans la liste, ou faites-la glisser depuis le Finder.")
             step(3, "Relancez Silt — macOS l'exige pour appliquer l'autorisation.")
         }

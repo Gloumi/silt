@@ -35,19 +35,23 @@ struct GeneralSettings: View {
             Section {
                 Toggle("Rechercher les mises à jour automatiquement",
                        isOn: $preferences.checksForUpdates)
-                LabeledContent {
-                    HStack {
-                        if let release = updates.newerRelease {
-                            Button("Voir…") { shownRelease = release }
+                // Redrawn every minute so that « vérifié à l'instant » ages
+                // with the window left open, instead of staying true forever.
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    LabeledContent {
+                        HStack {
+                            if let release = updates.newerRelease {
+                                Button("Voir…") { shownRelease = release }
+                            }
+                            Button("Rechercher maintenant") {
+                                Task { await updates.check(manual: true) }
+                            }
+                            .disabled(updates.state == .checking)
                         }
-                        Button("Rechercher maintenant") {
-                            Task { await updates.check(manual: true) }
-                        }
-                        .disabled(updates.state == .checking)
+                    } label: {
+                        Text("Version \(updates.currentVersionText)")
+                        Text(updates.statusText)
                     }
-                } label: {
-                    Text("Version \(updates.currentVersionText)")
-                    Text(updates.statusText)
                 }
                 SettingHelp("Une requête anonyme vers GitHub une fois par jour ; rien d'autre n'est envoyé. Silt ne télécharge rien lui-même.")
             }

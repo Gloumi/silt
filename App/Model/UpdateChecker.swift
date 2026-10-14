@@ -14,6 +14,23 @@ struct Release: Codable, Equatable, Identifiable, Sendable {
     var displayVersion: String { version?.description ?? tag }
 }
 
+/// Launch-to-launch state that a Debug build must keep to itself.
+///
+/// A Debug build and the installed Silt read the same `app.silt.mac` defaults.
+/// Built with another version number, or run without Full Disk Access of its
+/// own — the usual case, the grant belongs to a binary — it would tell the
+/// installed app that it had just been updated, or had never had the access,
+/// and the next real update would go unexplained.
+enum LaunchStateKey {
+    static func scoped(_ key: String) -> String {
+        #if DEBUG
+        "debug." + key
+        #else
+        key
+        #endif
+    }
+}
+
 /// Whether GitHub has a newer Silt than this one.
 ///
 /// Says so and stops there. Installing in place is what Sparkle is for, and it
@@ -40,10 +57,10 @@ final class UpdateChecker {
     }
 
     private enum Key {
-        static let lastCheck = "lastUpdateCheck"
-        static let latest = "latestKnownRelease"
-        static let skipped = "skippedVersion"
-        static let lastLaunched = "lastLaunchedVersion"
+        static let lastCheck = LaunchStateKey.scoped("lastUpdateCheck")
+        static let latest = LaunchStateKey.scoped("latestKnownRelease")
+        static let skipped = LaunchStateKey.scoped("skippedVersion")
+        static let lastLaunched = LaunchStateKey.scoped("lastLaunchedVersion")
     }
 
     let currentVersionText: String

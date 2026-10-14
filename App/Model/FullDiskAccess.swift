@@ -38,7 +38,7 @@ enum FullDiskAccess {
     /// would be wrong. A missing record (the first launch that keeps one) is
     /// read as granted, so the first update is not the one that goes unsaid.
     static func wasRevoked(byUpdate updated: Bool) -> Bool {
-        let key = "hadFullDiskAccess"
+        let key = LaunchStateKey.scoped("hadFullDiskAccess")
         let defaults = UserDefaults.standard
         let had = defaults.object(forKey: key) == nil || defaults.bool(forKey: key)
         let has = isGranted

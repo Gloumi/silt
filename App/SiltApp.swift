@@ -25,9 +25,10 @@ struct SiltApp: App {
                 // something is still waiting to be put back — the tool itself
                 // may never be opened, and that count is the only hint.
                 .task { await model.refreshRestorable() }
-                // Owns its own cadence; calling it again when the window is
-                // reopened is a no-op. The access check runs once per launch
-                // for the same reason the welcome flag does.
+                // Runs again whenever the window is reopened, harmlessly:
+                // `start` owns its own cadence and ignores a second call, and
+                // the access check has already recorded this launch's answer,
+                // so a second pass finds nothing new to say.
                 .task {
                     let updates = UpdateChecker.shared
                     // Called unconditionally: it also records this launch's
@@ -214,24 +215,45 @@ private struct CheckForUpdates: View {
         Button("Rechercher les mises à jour…") {
             Task {
                 await checker.check(manual: true)
-                if let release = checker.newerRelease {
+                if checker.newerRelease != nil, !anySheetIsUp {
                     // The sheet hangs off the main window, which may be closed.
                     openWindow(id: "main")
-                    checker.sheetRelease = release
+                    checker.sheetRelease = checker.newerRelease
                 } else {
-                    let alert = NSAlert()
-                    if case .failed(let message) = checker.state {
-                        alert.messageText = "Recherche impossible"
-                        alert.informativeText = message
-                    } else {
-                        alert.messageText = "Silt est à jour"
-                        alert.informativeText = "La version \(checker.currentVersionText) est la plus récente."
-                    }
-                    alert.runModal()
+                    report()
                 }
             }
         }
         .disabled(checker.state == .checking)
+    }
+
+    /// SwiftUI drops a second sheet on a window that already shows one, without
+    /// a word — and the welcome or a deletion may well be up when the menu is
+    /// used. The news then comes as an alert instead.
+    private var anySheetIsUp: Bool {
+        NSApp.windows.contains { $0.isVisible && $0.attachedSheet != nil }
+    }
+
+    private func report() {
+        let alert = NSAlert()
+        if let release = checker.newerRelease {
+            alert.messageText = "Silt \(release.displayVersion) est disponible"
+            alert.informativeText = "Vous utilisez la version \(checker.currentVersionText). La page de la version explique comment l'installer."
+            alert.addButton(withTitle: "Ouvrir la page de la version")
+            alert.addButton(withTitle: "Plus tard")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(release.page)
+            }
+            return
+        }
+        if case .failed(let message) = checker.state {
+            alert.messageText = "Recherche impossible"
+            alert.informativeText = message
+        } else {
+            alert.messageText = "Silt est à jour"
+            alert.informativeText = "La version \(checker.currentVersionText) est la plus récente."
+        }
+        alert.runModal()
     }
 }
 
