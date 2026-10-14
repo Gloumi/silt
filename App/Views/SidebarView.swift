@@ -9,6 +9,7 @@ struct SidebarView: View {
     @Bindable private var preferences = Preferences.shared
     @Environment(\.openWindow) private var openWindow
     private let locations = QuickLocation.standard()
+    private let updates = UpdateChecker.shared
 
     var body: some View {
         List {
@@ -140,6 +141,20 @@ struct SidebarView: View {
         // their own bottom-of-sidebar controls. ⌘, stays the keyboard's way in.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
+                // Next to the gear rather than in a banner: an update is worth
+                // knowing about, not worth interrupting a scan for.
+                if let release = updates.offeredRelease {
+                    Button { updates.sheetRelease = release } label: {
+                        Text("Silt \(release.displayVersion) disponible")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .foregroundStyle(.tint)
+                            .background(Color.accentColor.opacity(0.15), in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Voir la mise à jour")
+                }
                 Spacer()
                 Button { openWindow(id: SiltApp.settingsWindow) } label: {
                     Image(systemName: "gearshape")

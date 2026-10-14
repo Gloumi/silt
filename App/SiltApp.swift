@@ -58,6 +58,7 @@ struct SiltApp: App {
         .restorationBehavior(.disabled)
         .commands {
             CommandGroup(replacing: .appSettings) { OpenSettings() }
+            CommandGroup(after: .appInfo) { CheckForUpdates() }
             // Written out rather than taken from `SidebarCommands()`, for the
             // same reason as the inspector item below: the stock command aims
             // at whichever window is key, and it reaches the settings window
@@ -78,7 +79,7 @@ struct SiltApp: App {
             CommandGroup(replacing: .help) {
                 Button("Accès complet au disque…") { model.showsWelcome = true }
                 Divider()
-                Link("Code source", destination: URL(string: "https://github.com/")!)
+                Link("Code source", destination: UpdateChecker.repository)
             }
             // Where macOS puts Find. Declared by hand because `.searchable` —
             // which would have installed it — is not what draws the field; see
@@ -190,6 +191,37 @@ private struct OpenSettings: View {
     }
 }
 
+/// « Rechercher les mises à jour… », under « À propos de Silt » where every Mac
+/// app keeps it. A skipped version is shown anyway: asking is overriding.
+private struct CheckForUpdates: View {
+    @Environment(\.openWindow) private var openWindow
+    private let checker = UpdateChecker.shared
+
+    var body: some View {
+        Button("Rechercher les mises à jour…") {
+            Task {
+                await checker.check(manual: true)
+                if let release = checker.newerRelease {
+                    // The sheet hangs off the main window, which may be closed.
+                    openWindow(id: "main")
+                    checker.sheetRelease = release
+                } else {
+                    let alert = NSAlert()
+                    if case .failed(let message) = checker.state {
+                        alert.messageText = "Recherche impossible"
+                        alert.informativeText = message
+                    } else {
+                        alert.messageText = "Silt est à jour"
+                        alert.informativeText = "La version \(checker.currentVersionText) est la plus récente."
+                    }
+                    alert.runModal()
+                }
+            }
+        }
+        .disabled(checker.state == .checking)
+    }
+}
+
 struct ContentView: View {
     let model: ScanModel
     @Binding var sidebar: NavigationSplitViewVisibility
@@ -206,6 +238,7 @@ struct ContentView: View {
     /// installs a second one — two monitors would toggle the preview twice,
     /// which is to say not at all.
     @State private var spaceMonitor: Any?
+    @Bindable private var updates = UpdateChecker.shared
 
     var body: some View {
         // The banner is stacked under the whole split view rather than laid over
@@ -226,6 +259,11 @@ struct ContentView: View {
                     onDismiss: { model.dismissDeletionMessage() }
                 )
             }
+        }
+        // Up here so the sidebar's capsule and the menu item open the same
+        // sheet, over the window that has the browser in it.
+        .sheet(item: $updates.sheetRelease) { release in
+            UpdateSheet(release: release) { updates.sheetRelease = nil }
         }
     }
 

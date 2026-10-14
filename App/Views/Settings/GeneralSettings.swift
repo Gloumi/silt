@@ -4,6 +4,10 @@ import SwiftUI
 struct GeneralSettings: View {
     @Bindable private var preferences = Preferences.shared
     @State private var confirmingReset = false
+    private let updates = UpdateChecker.shared
+    /// Its own sheet rather than the main window's: the one asked for from
+    /// here should open in front of here.
+    @State private var shownRelease: Release?
 
     var body: some View {
         Form {
@@ -29,6 +33,26 @@ struct GeneralSettings: View {
             }
 
             Section {
+                Toggle("Rechercher les mises à jour automatiquement",
+                       isOn: $preferences.checksForUpdates)
+                LabeledContent {
+                    HStack {
+                        if let release = updates.newerRelease {
+                            Button("Voir…") { shownRelease = release }
+                        }
+                        Button("Rechercher maintenant") {
+                            Task { await updates.check(manual: true) }
+                        }
+                        .disabled(updates.state == .checking)
+                    }
+                } label: {
+                    Text("Version \(updates.currentVersionText)")
+                    Text(updates.statusText)
+                }
+                SettingHelp("Une requête anonyme vers GitHub une fois par jour ; rien d'autre n'est envoyé. Silt ne télécharge rien lui-même.")
+            }
+
+            Section {
                 LabeledContent("Réglages") {
                     Button("Réinitialiser…") { confirmingReset = true }
                 }
@@ -36,6 +60,9 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(item: $shownRelease) { release in
+            UpdateSheet(release: release) { shownRelease = nil }
+        }
         .confirmationDialog(
             "Réinitialiser tous les réglages ?",
             isPresented: $confirmingReset
