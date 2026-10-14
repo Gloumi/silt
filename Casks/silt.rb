@@ -4,11 +4,12 @@
 # second `homebrew-silt` repo is needed as long as Casks/ sits at the root.
 #
 #   brew tap Gloumi/silt https://github.com/Gloumi/silt
-#   brew install --cask --no-quarantine silt
+#   brew install --cask silt
 #
-# `--no-quarantine` matters while the app is unsigned: without it macOS flags
-# the download and refuses the first launch. Drop it once notarisation is in
-# place.
+# While the app is unsigned, macOS refuses the first launch of what Homebrew
+# downloads. `--no-quarantine` used to avoid that; Homebrew 7 rejects it as an
+# invalid option, so the README walks people through « Ouvrir quand même »
+# instead. Notarisation is the real fix.
 #
 # Submitting to homebrew-cask proper requires the app to be signed and
 # notarised, and the project to have some visible following. Do that once the

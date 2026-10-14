@@ -14,7 +14,7 @@ Silt demande **macOS 15 Sequoia** ou plus récent. L'interface est en français.
 
 ```sh
 brew tap Gloumi/silt https://github.com/Gloumi/silt
-brew install --cask --no-quarantine silt
+brew install --cask silt
 ```
 
 Ou téléchargez le DMG depuis les [releases](https://github.com/Gloumi/silt/releases).
@@ -30,8 +30,9 @@ Les binaires publiés ici ne sont pas signés par un certificat Developer ID —
 celui-ci coûte 99 €/an et le projet n'y est pas encore. macOS met donc en
 quarantaine tout ce qui vient du web et refuse le premier lancement.
 
-Le `--no-quarantine` ci-dessus règle le problème en amont : le drapeau n'est
-jamais posé, l'app s'ouvre normalement. Si vous passez par le DMG, deux voies :
+Homebrew comme le DMG mènent au même refus : Homebrew 7 a supprimé l'option
+`--no-quarantine` qui l'évitait (elle est désormais rejetée comme invalide).
+Deux voies, après l'installation comme après chaque mise à jour :
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Silt.app

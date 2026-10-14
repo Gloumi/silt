@@ -93,19 +93,19 @@ jobs:
 
             ```sh
             brew tap Gloumi/silt https://github.com/Gloumi/silt
-            brew install --cask --no-quarantine silt
+            brew install --cask silt
             ```
 
             Ou téléchargez le DMG ci-dessous.
 
             `sha256: ${{ steps.checksum.outputs.sha256 }}`
 
-            > **Build non signée.** Sans certificat Developer ID, macOS met le
-            > DMG en quarantaine et refuse le premier lancement. Le
-            > `--no-quarantine` ci-dessus l'évite ; depuis le DMG, lancez Silt,
-            > laissez macOS refuser, puis ouvrez Réglages Système ›
-            > Confidentialité et sécurité — un bouton *Ouvrir quand même* y
-            > apparaît.
+            > **Build non signée.** Sans certificat Developer ID, macOS met
+            > Silt en quarantaine — par Homebrew comme par le DMG — et refuse
+            > le premier lancement. Lancez Silt, laissez macOS refuser, puis
+            > ouvrez Réglages Système › Confidentialité et sécurité : un bouton
+            > *Ouvrir quand même* y apparaît. Ou, dans le Terminal :
+            > `xattr -dr com.apple.quarantine /Applications/Silt.app`
 
             > Silt a besoin de l'**accès complet au disque** pour analyser
             > l'intégralité de votre Mac. L'app vous guide au premier lancement.
