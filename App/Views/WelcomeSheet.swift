@@ -9,6 +9,7 @@ import SwiftUI
 /// admit it needs a relaunch, and get out of the way.
 struct WelcomeSheet: View {
     let unreadableCount: Int
+    var afterUpdate = false
     let onDismiss: () -> Void
 
     @State private var granted = FullDiskAccess.isGranted
@@ -20,10 +21,14 @@ struct WelcomeSheet: View {
                     .font(.system(size: 30))
                     .foregroundStyle(granted ? .green : .orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(granted ? "Accès complet accordé" : "Accès complet au disque")
+                    Text(granted ? "Accès complet accordé"
+                         : afterUpdate ? "Silt a été mis à jour"
+                         : "Accès complet au disque")
                         .font(.title3.weight(.semibold))
                     Text(granted
                          ? "Silt peut analyser l'intégralité de votre disque."
+                         : afterUpdate
+                         ? "macOS lui a retiré l'accès complet au disque."
                          : "Sans cette autorisation, certains dossiers restent invisibles.")
                         .foregroundStyle(.secondary)
                 }
@@ -76,7 +81,9 @@ struct WelcomeSheet: View {
     private var steps: some View {
         VStack(alignment: .leading, spacing: 5) {
             step(1, "Ouvrez Réglages Système › Confidentialité et sécurité › Accès complet au disque.")
-            step(2, "Activez Silt dans la liste, ou faites-la glisser depuis le Finder.")
+            step(2, afterUpdate
+                 ? "Silt y est encore coché, mais l'autorisation visait l'ancienne version : retirez Silt avec −, puis remettez-le avec + ou en le faisant glisser depuis le Finder."
+                 : "Activez Silt dans la liste, ou faites-la glisser depuis le Finder.")
             step(3, "Relancez Silt — macOS l'exige pour appliquer l'autorisation.")
         }
         .font(.callout)

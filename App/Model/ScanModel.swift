@@ -630,6 +630,9 @@ final class ScanModel {
     /// Full Disk Access explainer, shown once and reachable from the Help menu
     /// and from the warning in the status bar.
     var showsWelcome = !Preferences.shared.hasSeenWelcome
+    /// The welcome sheet is up because an update cost the app its access —
+    /// which wants different words from a first launch.
+    var welcomeAfterUpdate = false
     /// Whether the inspector column is open. Held here rather than in the view
     /// so the menu command can reach it: its keyboard shortcut has to keep
     /// working when the column — and the toolbar button that lives in it — is

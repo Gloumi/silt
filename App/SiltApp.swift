@@ -26,8 +26,21 @@ struct SiltApp: App {
                 // may never be opened, and that count is the only hint.
                 .task { await model.refreshRestorable() }
                 // Owns its own cadence; calling it again when the window is
-                // reopened is a no-op.
-                .task { UpdateChecker.shared.start() }
+                // reopened is a no-op. The access check runs once per launch
+                // for the same reason the welcome flag does.
+                .task {
+                    let updates = UpdateChecker.shared
+                    // Called unconditionally: it also records this launch's
+                    // answer, which the next launch needs even when the
+                    // welcome has not been seen yet.
+                    let revoked = FullDiskAccess.wasRevoked(
+                        byUpdate: updates.launchedAfterUpdate)
+                    if revoked, Preferences.shared.hasSeenWelcome {
+                        model.welcomeAfterUpdate = true
+                        model.showsWelcome = true
+                    }
+                    updates.start()
+                }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
 
@@ -293,9 +306,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: Bindable(model).showsWelcome) {
             WelcomeSheet(
-                unreadableCount: model.result?.unreadablePaths.count ?? 0
+                unreadableCount: model.result?.unreadablePaths.count ?? 0,
+                afterUpdate: model.welcomeAfterUpdate
             ) {
                 model.showsWelcome = false
+                model.welcomeAfterUpdate = false
                 Preferences.shared.hasSeenWelcome = true
             }
         }

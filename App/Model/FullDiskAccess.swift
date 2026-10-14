@@ -28,6 +28,24 @@ enum FullDiskAccess {
         }
     }
 
+    /// Whether an update just took the access away, recording this launch's
+    /// answer for the next one.
+    ///
+    /// An ad-hoc signed app is known to TCC by the hash of its binary, and an
+    /// update is a new binary: the old entry stays in the list, ticked, and
+    /// applies to nothing. Only worth saying when the previous launch had the
+    /// access — telling someone it was "taken away" when they never gave it
+    /// would be wrong. A missing record (the first launch that keeps one) is
+    /// read as granted, so the first update is not the one that goes unsaid.
+    static func wasRevoked(byUpdate updated: Bool) -> Bool {
+        let key = "hadFullDiskAccess"
+        let defaults = UserDefaults.standard
+        let had = defaults.object(forKey: key) == nil || defaults.bool(forKey: key)
+        let has = isGranted
+        defaults.set(has, forKey: key)
+        return updated && had && !has
+    }
+
     /// Opens the exact pane, since telling someone to "go to Privacy settings"
     /// and leaving them to find it is most of the friction.
     static func openSettings() {
