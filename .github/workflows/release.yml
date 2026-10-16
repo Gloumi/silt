@@ -3,6 +3,9 @@ name: Release
 # Tag a version to publish it:
 #   git tag v0.1.0 && git push --tags
 #
+# Run it by hand on a branch (workflow_dispatch) for a dry run: the same build
+# and DMG, kept as a workflow artifact, and nothing published.
+#
 # Signing and notarisation only happen if the secrets below are present, so a
 # fork can build and release unsigned artefacts without any Apple account.
 #
@@ -24,14 +27,23 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-15
+    # The app needs Xcode 26 (Swift 6.2, the macOS 26 SDK), which only the
+    # macOS 26 image carries. On macos-15 the build failed on Xcode 16.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # release.sh derives the version from tags
 
+      # Fails the job when no Xcode 26 is there, rather than falling back to
+      # whatever the image defaults to: that fallback is how two releases
+      # went out without an executable.
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.app || true
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XCODE" ] || { echo "No Xcode 26 on this image"; ls -d /Applications/Xcode*; exit 1; }
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -83,7 +95,14 @@ jobs:
           echo "path=$DMG" >> "$GITHUB_OUTPUT"
           echo "sha256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
+      - name: Keep the DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: ${{ steps.checksum.outputs.path }}
+
       - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.checksum.outputs.path }}

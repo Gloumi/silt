@@ -48,18 +48,28 @@ xcodegen generate --quiet
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-say "Compilation"
-xcodebuild \
+say "Compilation — $(xcodebuild -version | head -1)"
+# Judged on xcodebuild's exit status, never on the bundle being there: a failed
+# compile still leaves an .app holding the resources and no executable, and
+# that shell is what 0.5.0 and 0.6.0 shipped.
+BUILD_LOG="$BUILD_DIR/xcodebuild.log"
+if ! xcodebuild \
   -project "$APP_NAME.xcodeproj" \
   -scheme "$APP_NAME" \
   -configuration Release \
   -derivedDataPath "$BUILD_DIR/DerivedData" \
   MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  build 2>&1 | grep -E "error:|warning: .*deprecated|BUILD" || true
+  build > "$BUILD_LOG" 2>&1; then
+  grep -E "error:" "$BUILD_LOG" | head -20
+  echo "Compilation échouée — journal complet : $BUILD_LOG"
+  exit 1
+fi
+grep -E "warning: .*deprecated" "$BUILD_LOG" || true
 
 APP_PATH="$BUILD_DIR/DerivedData/Build/Products/Release/$APP_NAME.app"
-[[ -d "$APP_PATH" ]] || { echo "Compilation échouée"; exit 1; }
+[[ -x "$APP_PATH/Contents/MacOS/$APP_NAME" ]] \
+  || { echo "Pas d'exécutable dans $APP_PATH"; exit 1; }
 
 # --- Signing -------------------------------------------------------------------
 
@@ -76,10 +86,14 @@ if [[ -n "$IDENTITY" ]]; then
     --sign "$IDENTITY" "$APP_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 else
-  warn "Aucun certificat « Developer ID Application » : build non signée."
+  # Ad-hoc, explicitly. Apple Silicon refuses to run code with no signature at
+  # all, and what xcodebuild leaves without a team depends on its version.
+  codesign --force --deep --options runtime --sign - "$APP_PATH"
+  warn "Aucun certificat « Developer ID Application » : signature ad hoc."
   warn "Elle fonctionne ici, mais un autre Mac affichera un avertissement."
   warn "Il faut l'adhésion au programme développeur Apple (99 €/an)."
 fi
+codesign --verify --deep --strict "$APP_PATH"
 
 # --- DMG -----------------------------------------------------------------------
 
