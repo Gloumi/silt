@@ -4,7 +4,11 @@
 # second `homebrew-silt` repo is needed as long as Casks/ sits at the root.
 #
 #   brew tap Gloumi/silt https://github.com/Gloumi/silt
+#   brew trust --cask gloumi/silt/silt
 #   brew install --cask silt
+#
+# Homebrew 7 refuses to install from a third-party tap until it is trusted;
+# tapping it is not enough.
 #
 # While the app is unsigned, macOS refuses the first launch of what Homebrew
 # downloads. `--no-quarantine` used to avoid that; Homebrew 7 rejects it as an

@@ -112,6 +112,7 @@ jobs:
 
             ```sh
             brew tap Gloumi/silt https://github.com/Gloumi/silt
+            brew trust --cask gloumi/silt/silt
             brew install --cask silt
             ```
 

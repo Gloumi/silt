@@ -14,8 +14,12 @@ Silt demande **macOS 15 Sequoia** ou plus récent. L'interface est en français.
 
 ```sh
 brew tap Gloumi/silt https://github.com/Gloumi/silt
+brew trust --cask gloumi/silt/silt
 brew install --cask silt
 ```
+
+Depuis Homebrew 7, un cask hors du dépôt officiel doit être approuvé avant
+d'être installé : c'est le rôle de `brew trust`, à faire une seule fois.
 
 Ou téléchargez le DMG depuis les [releases](https://github.com/Gloumi/silt/releases).
 
