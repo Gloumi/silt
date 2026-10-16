@@ -19,6 +19,13 @@ brew install --cask silt
 
 Ou téléchargez le DMG depuis les [releases](https://github.com/Gloumi/silt/releases).
 
+Silt vérifie une fois par jour s'il existe une version plus récente — une
+requête anonyme à GitHub, désactivable dans Réglages › Général — et indique alors
+la commande Homebrew ou la page de téléchargement. Il ne télécharge rien
+lui-même. Tant que l'app n'est pas signée, chaque mise à jour lui fait perdre
+l'accès complet au disque : Silt le signale au lancement suivant et explique
+comment le rétablir.
+
 > **Accès complet au disque.** macOS protège Mail, Messages, Photos et les
 > sauvegardes d'appareils. Sans autorisation, ces dossiers sont signalés comme
 > illisibles et manquent aux totaux. L'app explique la marche à suivre au premier
