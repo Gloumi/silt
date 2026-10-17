@@ -2104,8 +2104,12 @@ final class ScanModel {
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled, let self else { return }
             saveTask = nil
+            // Counted before the roots are drained: emptying `unsavedRoots`
+            // first would hand sudden termination back before the write that
+            // carries them is even queued.
+            pendingVaultJobs += 1
             let (scans, stale) = takeUnsavedScans()
-            enqueueVaultJob {
+            enqueueVaultJob(alreadyCounted: true) {
                 for root in stale { ScanVault.remove(rootPath: root) }
                 for scan in scans { ScanVault.save(scan) }
             }
@@ -2118,6 +2122,10 @@ final class ScanModel {
     func flushUnsavedScans() {
         saveTask?.cancel()
         saveTask = nil
+        // Holds sudden termination through the write below, which draining
+        // `unsavedRoots` would otherwise release first. Never given back: the
+        // app is terminating, and nothing comes after this write.
+        pendingVaultJobs += 1
         let (scans, stale) = takeUnsavedScans()
         Self.vaultQueue.sync {
             for root in stale { ScanVault.remove(rootPath: root) }
@@ -2155,12 +2163,18 @@ final class ScanModel {
 
     /// Forgets a root's saved scan, in memory and on disk.
     private func discardSavedScan(of root: String) {
-        unsavedRoots.remove(root)
+        // Queued before the root leaves `unsavedRoots`, for the same reason
+        // `scheduleSave` counts its job first: the hold never lapses between.
         enqueueVaultJob { ScanVault.remove(rootPath: root) }
+        unsavedRoots.remove(root)
     }
 
-    private func enqueueVaultJob(_ job: @escaping @Sendable () -> Void) {
-        pendingVaultJobs += 1
+    /// `alreadyCounted` when the caller raised `pendingVaultJobs` itself, ahead
+    /// of something that would otherwise release the termination hold.
+    private func enqueueVaultJob(
+        alreadyCounted: Bool = false, _ job: @escaping @Sendable () -> Void
+    ) {
+        if !alreadyCounted { pendingVaultJobs += 1 }
         Self.vaultQueue.async { [weak self] in
             job()
             Task { @MainActor in self?.pendingVaultJobs -= 1 }
