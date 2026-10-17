@@ -181,6 +181,12 @@ struct DuplicatesView: View {
                 ? nil : new[min(oldIndex, new.count - 1)].id
         }
         .onAppear { if pane == nil { pane = .list } }
+        // Back from the search field: the groups, where triage starts. Reset
+        // first for the reason given in `takesKeyboardOnAppear`.
+        .onReceive(NotificationCenter.default.publisher(for: .contentTakesKeyboard)) { _ in
+            pane = nil
+            DispatchQueue.main.async { pane = .list }
+        }
         // ⌘⏎ from anywhere in the view: straight to the recap. The button it
         // mirrors is disabled with nothing marked, so this guards the same.
         .background {

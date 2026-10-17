@@ -42,6 +42,11 @@ private struct ChartKeyboard: ViewModifier {
             .onAppear(perform: takeKeyboard)
             .onChange(of: model.currentNode) { takeKeyboard() }
             .onChange(of: model.selection) { takeKeyboard() }
+            // Same answer as the lists: see `takesKeyboardOnAppear`.
+            .onReceive(NotificationCenter.default.publisher(for: .contentTakesKeyboard)) { _ in
+                isFocused = false
+                DispatchQueue.main.async { isFocused = true }
+            }
     }
 
     private func step(_ offset: Int) -> KeyPress.Result {

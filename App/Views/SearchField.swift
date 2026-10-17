@@ -66,6 +66,15 @@ struct SearchField: View {
     }
 }
 
+extension Notification.Name {
+    /// Posted when the search field lets go of the keyboard on purpose — ⏎, or
+    /// the second escape. Whatever view is on screen takes it.
+    ///
+    /// A notification rather than a model token: the lists and the charts
+    /// that answer it are generic views with no model of their own.
+    static let contentTakesKeyboard = Notification.Name("SiltContentTakesKeyboard")
+}
+
 // MARK: - AppKit bridge
 
 private struct BridgedSearchField: NSViewRepresentable {
@@ -235,14 +244,21 @@ private struct BridgedSearchField: NSViewRepresentable {
         ) -> Bool {
             switch selector {
             case #selector(NSResponder.insertNewline(_:)):
-                parent.model.rememberSearch()
+                // ⏎ is "done typing, show me": the results take the keyboard,
+                // so the arrows walk them straight away. Left in the field,
+                // they moved its caret and the view looked frozen.
+                control.window?.makeFirstResponder(nil)
+                parent.onClickedAway()
+                NotificationCenter.default.post(name: .contentTakesKeyboard, object: nil)
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 // First escape clears, second gives the field back — the stock
-                // rhythm of a macOS search field.
+                // rhythm of a macOS search field — and the keyboard to the view,
+                // rather than to nobody.
                 if parent.model.untrackedSearchText.isEmpty {
                     control.window?.makeFirstResponder(nil)
                     parent.onDismiss()
+                    NotificationCenter.default.post(name: .contentTakesKeyboard, object: nil)
                 } else {
                     control.stringValue = ""
                     parent.model.searchText = ""

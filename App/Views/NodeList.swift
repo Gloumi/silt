@@ -98,6 +98,14 @@ private struct TakesKeyboardOnAppear: ViewModifier {
                 guard !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
                 isFocused = true
             }
+            // Asked for outright, so no reserve for the field here. Dropped
+            // and retaken a turn later: the state can still read true from
+            // before the caret went to the field, and setting it again would
+            // move nothing.
+            .onReceive(NotificationCenter.default.publisher(for: .contentTakesKeyboard)) { _ in
+                isFocused = false
+                DispatchQueue.main.async { isFocused = true }
+            }
     }
 }
 
