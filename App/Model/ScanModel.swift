@@ -936,6 +936,7 @@ final class ScanModel {
         }
 
         purgeExpiredCache()
+        if !force { retireExpiredTree() }
         if !force, rootPath == path, isScanning || result != nil { return }
 
         if !force, let found = tree(holding: path) {
@@ -1042,13 +1043,65 @@ final class ScanModel {
         presentation = Preferences.shared.presentation(for: path)
             ?? Preferences.shared.resolvedDefaultView
         purgeExpiredCache()
+        retireExpiredTree()
         guard path != rootPath, let found = tree(holding: path) else { return }
         show(found, at: path)
     }
 
-    /// True once an analysis is older than the limit the user set.
+    /// True once an analysis is older than the limit the user set. A date in
+    /// the future — the clock was set back, or the file was crafted — gives
+    /// no age to trust, so it counts as expired too.
     func isExpired(_ date: Date) -> Bool {
-        Date().timeIntervalSince(date) > Double(Preferences.shared.scanMaxAgeDays) * 86_400
+        let age = Date().timeIntervalSince(date)
+        return age < 0 || age > Double(Preferences.shared.scanMaxAgeDays) * 86_400
+    }
+
+    /// The tree on screen when it is a finished walk: not under way, not
+    /// cancelled, dated. Only such a tree is saved, kept over its saved copy,
+    /// or retired for age.
+    private var finishedTree: (root: String, result: ScanResult, date: Date)? {
+        guard !isScanning, let result, !result.wasCancelled,
+              let scannedAt, let treeRootPath
+        else { return nil }
+        return (treeRootPath, result, scannedAt)
+    }
+
+    /// Takes the tree on screen down once it is past the limit, at a
+    /// selection — the user's own act, so nothing is pulled away under their
+    /// eyes, which is why `purgeExpiredCache` leaves this tree alone. Without
+    /// it the location the user moves to would be blank with no word of why,
+    /// and re-selecting the tree's own location would bring it straight back.
+    /// The window falls back to "Prêt à analyser", which names the date.
+    private func retireExpiredTree() {
+        guard let tree = finishedTree, isExpired(tree.date) else { return }
+        Preferences.shared.noteExpired(root: tree.root, scannedAt: tree.date)
+        discardSavedScan(of: tree.root)
+
+        anchor = 0
+        trail = [0]
+        othersScope = nil
+        rows = []
+        selection = []
+        result = nil
+        partialStore = nil
+        resetSearch()
+        junkTask?.cancel()
+        junkReport = nil
+        junkPhase = .idle
+        junkSelection = []
+        largeFilesTask?.cancel()
+        largeFiles = nil
+        largeFilesPhase = .idle
+        resetDuplicates()
+        lastDeletion = nil
+        undoSizes = [:]
+        deletionMessage = nil
+        scanID += 1
+        rootPath = nil
+        treeRootPath = nil
+        scannedAt = nil
+        phase = .idle
+        treeDidChange()
     }
 
     /// The tree on screen is older than a day: worth saying, not worth hiding.
@@ -1949,16 +2002,18 @@ final class ScanModel {
         // is decided in this one loop.
         var vetted: [SavedScan] = []
         for scan in saved {
-            // An external volume that is not plugged in, a folder renamed: the
-            // file is kept, since the volume may well come back.
-            guard FileManager.default.fileExists(atPath: scan.rootPath) else { continue }
             // Past the limit: not loaded, and its file goes — it could only
             // ever be refused again. Remembered so the empty screen can say so.
+            // Before the check below, or the scan of a volume left unplugged
+            // would be kept for ever.
             if isExpired(scan.scannedAt) {
                 Preferences.shared.noteExpired(root: scan.rootPath, scannedAt: scan.scannedAt)
                 discardSavedScan(of: scan.rootPath)
                 continue
             }
+            // An external volume that is not plugged in, a folder renamed: the
+            // file is kept, since the volume may well come back.
+            guard FileManager.default.fileExists(atPath: scan.rootPath) else { continue }
             vetted.append(scan)
         }
 
@@ -1971,9 +2026,7 @@ final class ScanModel {
                 // A walk of that root in flight, or one that was cancelled,
                 // holds no finished tree to keep the file in step: drop it,
                 // as `scan` does. A finished tree on screen saves over it.
-                let finished = (result.map { !$0.wasCancelled } ?? false)
-                    && scannedAt != nil && !isScanning
-                if !finished { discardSavedScan(of: scan.rootPath) }
+                if finishedTree == nil { discardSavedScan(of: scan.rootPath) }
                 continue
             }
             guard !cache.contains(where: { $0.path == scan.rootPath }),
@@ -2085,8 +2138,8 @@ final class ScanModel {
         var scans: [SavedScan] = []
         var stale: [String] = []
         for root in unsavedRoots {
-            if root == treeRootPath, let result, let scannedAt, !result.wasCancelled {
-                scans.append(SavedScan(rootPath: root, scannedAt: scannedAt, result: result))
+            if let tree = finishedTree, tree.root == root {
+                scans.append(SavedScan(rootPath: root, scannedAt: tree.date, result: tree.result))
             } else if let entry = cache.first(where: { $0.path == root }),
                       !entry.scan.result.wasCancelled {
                 scans.append(SavedScan(
