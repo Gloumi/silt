@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CryptoKit
 @testable import DiskCore
 
 @Suite("Saved scan")
@@ -119,5 +120,99 @@ struct SavedScanTests {
         #expect(store(nameLength: [1, 1, 2]) == nil)      // name past the blob
         #expect(store(nameOffset: [0, 1, 4]) == nil)
         #expect(store(totalAlloc: [0, 0]) == nil)         // mismatched lengths
+    }
+}
+
+@Suite("Scan sealing")
+struct ScanSealingTests {
+    private let sample = Data(
+        (0..<1_000_000).map { UInt8(truncatingIfNeeded: $0 % 37) }
+    )
+
+    @Test("Sealed with a key, it opens with the same key and is smaller")
+    func roundTripWithKey() throws {
+        let key = SymmetricKey(size: .bits256)
+        let sealed = try ScanSealing.seal(sample, key: key)
+        #expect(sealed.count < sample.count / 4)
+        #expect(ScanSealing.open(sealed, key: key) == sample)
+    }
+
+    @Test("Sealed without a key, it opens without one")
+    func roundTripWithoutKey() throws {
+        let sealed = try ScanSealing.seal(sample, key: nil)
+        #expect(sealed.count < sample.count / 4)
+        #expect(ScanSealing.open(sealed, key: nil) == sample)
+    }
+
+    @Test("Another key opens nothing")
+    func wrongKeyFails() throws {
+        let sealed = try ScanSealing.seal(
+            sample, key: SymmetricKey(size: .bits256)
+        )
+        #expect(ScanSealing.open(sealed, key: SymmetricKey(size: .bits256)) == nil)
+    }
+
+    @Test("A flipped byte is refused")
+    func tamperingFails() throws {
+        let key = SymmetricKey(size: .bits256)
+        var sealed = try ScanSealing.seal(sample, key: key)
+        sealed[sealed.count / 2] ^= 0xFF
+        #expect(ScanSealing.open(sealed, key: key) == nil)
+    }
+}
+
+@Suite("Reinstated sizes")
+struct ReinstatedSizesTests {
+    private typealias Totals = (alloc: Int64, logical: Int64, files: Int32)
+
+    private func totals(_ store: NodeStore, _ node: Int32) -> Totals {
+        let i = Int(node)
+        return (store.totalAlloc[i], store.totalLogical[i], store.fileCount[i])
+    }
+
+    private func fixture() throws -> Fixture {
+        let fixture = try Fixture()
+        try fixture.file("x/one.bin", bytes: 8_000)
+        try fixture.file("x/two.bin", bytes: 4_000)
+        return fixture
+    }
+
+    private func roundTrip(_ relative: String) async throws {
+        let fixture = try fixture()
+        var store = await ScanEngine.scan(root: fixture.path).store
+        let root = store.name(of: 0)
+        let node = try #require(store.node(atPath: root + relative))
+        let before = totals(store, node), rootBefore = totals(store, 0)
+
+        store.markDeleted(node)
+        let back = try #require(
+            store.reinstatedSizes(of: node, at: root + relative)
+        )
+        store.unmarkDeleted(node, alloc: back.alloc, logical: back.logical, files: back.files)
+
+        #expect(totals(store, node) == before)
+        #expect(totals(store, 0) == rootBefore)
+    }
+
+    @Test("A file comes back with its size")
+    func fileComesBackWithItsSize() async throws {
+        try await roundTrip("/x/one.bin")
+    }
+
+    @Test("A folder comes back with its size")
+    func folderComesBackWithItsSize() async throws {
+        try await roundTrip("/x")
+    }
+
+    @Test("A path that is gone has no size")
+    func missingPathIsNil() async throws {
+        let fixture = try fixture()
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let root = store.name(of: 0)
+        let node = try #require(store.node(atPath: root + "/x/one.bin"))
+        try FileManager.default.removeItem(
+            at: fixture.root.appendingPathComponent("x/one.bin")
+        )
+        #expect(store.reinstatedSizes(of: node, at: root + "/x/one.bin") == nil)
     }
 }

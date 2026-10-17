@@ -448,3 +448,41 @@ public struct NodeStore: Sendable {
         }
     }
 }
+
+extension NodeStore {
+
+    /// Sizes to give back to a node marked `.deleted` that has returned to
+    /// disk at `path`, without remembering what it weighed before.
+    ///
+    /// `markDeleted` zeroes only the node it is handed, so the children of a
+    /// walked folder still carry their totals and are summed here. A child that
+    /// was trashed earlier is already at zero, and asking `isEffectivelyDeleted`
+    /// would be wrong anyway: the folder's own flag is still set. The folder
+    /// itself counts as the scan engine counts it: its own blocks for both alloc
+    /// and logical (the directory attributes carry no separate length), no file.
+    /// Anything the scan never descended into has no children to add up, so
+    /// it is measured whole. Nil when nothing exists at `path` any more.
+    public func reinstatedSizes(of node: Int32, at path: String)
+        -> (alloc: Int64, logical: Int64, files: Int32)?
+    {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+
+        let own = (alloc: Int64(info.st_blocks) * 512, logical: Int64(info.st_size))
+        guard info.st_mode & S_IFMT == S_IFDIR else {
+            return (own.alloc, own.logical, 1)
+        }
+        guard isDirectory(node), !flags[Int(node)].contains(.notDescended) else {
+            let measured = PathSize.measure(path)
+            return (measured.allocated, measured.allocated, measured.files)
+        }
+
+        var alloc = own.alloc, logical = own.alloc, files: Int32 = 0
+        for child in children(of: node) {
+            alloc += totalAlloc[Int(child)]
+            logical += totalLogical[Int(child)]
+            files += fileCount[Int(child)]
+        }
+        return (alloc, logical, files)
+    }
+}
