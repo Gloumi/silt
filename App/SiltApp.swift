@@ -328,7 +328,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: Bindable(model).showsWelcome) {
             WelcomeSheet(
-                unreadableCount: model.result?.unreadablePaths.count ?? 0,
+                unreadableCount: model.unreadablePaths.count,
                 afterUpdate: model.welcomeAfterUpdate
             ) {
                 model.showsWelcome = false

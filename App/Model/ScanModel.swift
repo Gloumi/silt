@@ -239,9 +239,19 @@ final class ScanModel {
     /// Tree built so far, refreshed a few times a second while scanning.
     private(set) var partialStore: NodeStore?
 
-    /// Path from the scan root down to the directory on screen. Always starts
-    /// at the root node, so it doubles as the breadcrumb.
+    /// Path from the location's node down to the directory on screen. Always
+    /// starts at `anchor`, so it doubles as the breadcrumb.
     private(set) var trail: [Int32] = [0]
+
+    /// The node the location on screen stands on: the scan root, or a folder
+    /// inside a tree scanned from higher up.
+    ///
+    /// Opening "Téléchargements" after a whole-disk analysis must not mean
+    /// walking it again — the tree already holds it. The location is then
+    /// shown from inside that tree, and nothing above it is reachable: it
+    /// behaves exactly as if it had been scanned on its own, and a deletion
+    /// made here is a deletion in the one tree there is.
+    private(set) var anchor: Int32 = 0
     var selection: Set<Int32> = []
 
     /// Contents of an "others" slice the user has stepped into.
@@ -613,7 +623,8 @@ final class ScanModel {
     /// makes the list a record of mistakes. Called when the user leaves a query
     /// behind, never per keystroke.
     func rememberSearch() {
-        guard let mask = searchMask, !mask.isEmpty else { return }
+        guard let mask = searchMask, mask.resultCount(under: anchor) > 0
+        else { return }
         Preferences.shared.rememberSearch(mask.query.text)
     }
 
@@ -730,9 +741,12 @@ final class ScanModel {
 
     private var scanTask: Task<Void, Never>?
 
-    /// Root of the scan on screen, and when it was taken.
+    /// Location on screen, and when the tree it comes from was taken.
     private(set) var rootPath: String?
     private(set) var scannedAt: Date?
+    /// Where the tree in memory was scanned from. The same as `rootPath`
+    /// unless the location is borrowed from an analysis higher up.
+    private(set) var treeRootPath: String?
 
     /// What the sidebar points at, which is not the same as what has been
     /// scanned: the app opens with a volume highlighted and waits to be told to
@@ -919,15 +933,16 @@ final class ScanModel {
 
         if !force, rootPath == path, isScanning || result != nil { return }
 
-        scanTask?.cancel()
-        stashCurrentScan()
-
-        if !force, let index = cache.firstIndex(where: { $0.path == path }) {
-            restore(cache.remove(at: index), path: path)
+        if !force, let found = tree(holding: path) {
+            show(found, at: path)
             return
         }
+
+        scanTask?.cancel()
+        stashCurrentScan()
         cache.removeAll { $0.path == path }
 
+        anchor = 0
         trail = [0]
         othersScope = nil
         rows = []
@@ -947,6 +962,7 @@ final class ScanModel {
         deletionMessage = nil
         scanID += 1
         rootPath = path
+        treeRootPath = path
         // Only stamped on success, which is also what keeps a failed or
         // cancelled scan out of the cache.
         scannedAt = nil
@@ -1004,11 +1020,8 @@ final class ScanModel {
         // mode the resolved default *is* the view in use, so it carries over.
         presentation = Preferences.shared.presentation(for: path)
             ?? Preferences.shared.resolvedDefaultView
-        guard path != rootPath,
-              let index = cache.firstIndex(where: { $0.path == path })
-        else { return }
-        stashCurrentScan()
-        restore(cache.remove(at: index), path: path)
+        guard path != rootPath, let found = tree(holding: path) else { return }
+        show(found, at: path)
     }
 
     /// True when the sidebar points somewhere that has not been analysed.
@@ -1024,6 +1037,10 @@ final class ScanModel {
     }
 
     /// Re-scans the current root from disk, discarding what is on screen.
+    ///
+    /// A location borrowed from a bigger tree is walked on its own: the bigger
+    /// tree goes back to the cache untouched, dated as it was, and the fresher
+    /// of the two is what the location shows from then on.
     func rescan() {
         guard let rootPath else { return }
         scan(path: rootPath, force: true)
@@ -1036,23 +1053,86 @@ final class ScanModel {
     /// A cancelled scan is never cached: it is a partial tree, and silently
     /// serving it later as if it were complete would under-report.
     private func stashCurrentScan() {
-        guard let result, let rootPath, let scannedAt,
+        guard let result, let treeRootPath, let scannedAt,
               !result.wasCancelled
         else { return }
-        cache.removeAll { $0.path == rootPath }
-        cache.append((rootPath, CachedScan(result: result, date: scannedAt)))
-        if cache.count > Self.cacheLimit {
-            cache.removeFirst(cache.count - Self.cacheLimit)
+        cache.removeAll { $0.path == treeRootPath }
+        cache.append((treeRootPath, CachedScan(result: result, date: scannedAt)))
+        while cache.count > Self.cacheLimit {
+            // The boot volume's tree answers for every folder on it, so two
+            // small scans must not push it out: it goes last.
+            cache.remove(at: cache.firstIndex { $0.path != "/" } ?? 0)
         }
     }
 
-    private func restore(_ entry: (path: String, scan: CachedScan), path: String) {
+    /// Where a finished tree that holds a location lives.
+    private enum TreeHolder {
+        case onScreen
+        case cached(index: Int)
+    }
+
+    /// The freshest finished tree in memory that holds `path` — scanned from
+    /// there, or from a folder above it — and the node it is at.
+    ///
+    /// A cancelled tree never qualifies, for the reason it is never cached. A
+    /// folder the bigger walk did not go into, could not open, or that has
+    /// since gone to the Trash would show up empty or wrong, so for those the
+    /// location waits for a walk of its own. The scanned root itself is always
+    /// honoured, as it was before trees were shared.
+    private func tree(holding path: String) -> (holder: TreeHolder, node: Int32, date: Date)? {
+        // The scanner resolves its root, so a store names its folders by their
+        // real path; asking with the sidebar's spelling has to do the same.
+        let resolved = realpath(path, nil).map { pointer in
+            defer { free(pointer) }
+            return String(cString: pointer)
+        } ?? path
+        var best: (holder: TreeHolder, node: Int32, date: Date)?
+        func consider(_ holder: TreeHolder, _ tree: ScanResult, _ date: Date) {
+            guard !tree.wasCancelled,
+                  best.map({ date > $0.date }) ?? true,
+                  let node = tree.store.node(atPath: resolved)
+                      ?? tree.store.node(atPath: path)
+            else { return }
+            if node != 0 {
+                let flags = tree.store.flags[Int(node)]
+                guard flags.contains(.directory),
+                      !flags.contains(.notDescended),
+                      !flags.contains(.unreadable),
+                      !tree.store.isEffectivelyDeleted(node)
+                else { return }
+            }
+            best = (holder, node, date)
+        }
+        if !isScanning, let result, let scannedAt {
+            consider(.onScreen, result, scannedAt)
+        }
+        for (index, entry) in cache.enumerated() {
+            consider(.cached(index: index), entry.scan.result, entry.scan.date)
+        }
+        return best
+    }
+
+    /// Puts a location on screen from a tree already in memory — the one on
+    /// screen, re-anchored, or one brought back from the cache.
+    private func show(
+        _ found: (holder: TreeHolder, node: Int32, date: Date), at path: String
+    ) {
+        if case .cached(let index) = found.holder {
+            // Out of the cache before the tree we leave goes in, so the index
+            // still points at the right entry and the two never share a slot.
+            let entry = cache.remove(at: index)
+            stashCurrentScan()
+            result = entry.scan.result
+            treeRootPath = entry.path
+            scannedAt = entry.scan.date
+        }
         // A scan may still be running — leaving Cleanup mid-walk lands here —
         // and letting it finish would drop its tree on top of the restored one.
         scanTask?.cancel()
         scanTask = nil
         junkTask?.cancel()
-        trail = [0]
+        anchor = found.node
+        trail = [found.node]
         othersScope = nil
         rows = []
         selection = []
@@ -1067,12 +1147,28 @@ final class ScanModel {
         resetDuplicates()
         lastDeletion = nil
         deletionMessage = nil
+        // Bumped even when the tree stays: everything keyed on it — duplicates,
+        // the extract, the charts' geometry — describes the old location.
         scanID += 1
-        result = entry.scan.result
         rootPath = path
-        scannedAt = entry.scan.date
         phase = .loaded
         treeDidChange()
+    }
+
+    /// When the location on screen is borrowed from a bigger tree, how the
+    /// sidebar names where that tree was scanned from.
+    var borrowedFromName: String? {
+        guard anchor != 0, let treeRootPath else { return nil }
+        return QuickLocation.displayName(of: treeRootPath)
+    }
+
+    /// Folders that could not be opened, within the location on screen. A
+    /// borrowed location must not report the whole disk's.
+    var unreadablePaths: [String] {
+        guard let result else { return [] }
+        guard anchor != 0, let store else { return result.unreadablePaths }
+        let prefix = store.path(of: anchor) + "/"
+        return result.unreadablePaths.filter { $0.hasPrefix(prefix) }
     }
 
     func cancel() {
@@ -1192,16 +1288,18 @@ final class ScanModel {
         refreshRows()
     }
 
-    /// Path from the scan root down to `node`, which is what `trail` is.
+    /// Path from the anchor down to `node`, which is what `trail` is. A node
+    /// outside the location has no place in it, and gets the anchor alone.
     private func ancestry(of node: Int32) -> [Int32] {
-        guard let store, node >= 0, Int(node) < store.count else { return [0] }
+        guard let store, node >= 0, Int(node) < store.count else { return [anchor] }
         var ancestors: [Int32] = []
         var current = node
-        while current != 0 {
+        while current != anchor {
+            guard current != 0 else { return [anchor] }
             ancestors.append(current)
             current = store.parent[Int(current)]
         }
-        ancestors.append(0)
+        ancestors.append(anchor)
         return ancestors.reversed()
     }
 
@@ -1732,8 +1830,8 @@ final class ScanModel {
     /// "Démarrer l'analyse" button, like every other view.
     func showCleanup() {
         presentation = .cleanup
-        if rootPath != "/", cache.contains(where: { $0.path == "/" }) {
-            scan(path: "/") // Cache hit: restored instantly, no walk starts.
+        if rootPath != "/", tree(holding: "/") != nil {
+            scan(path: "/") // In memory: shown instantly, no walk starts.
         }
     }
 
@@ -2501,7 +2599,7 @@ final class ScanModel {
     /// Moves onto the closest folder that holds every result.
     private func recenter(using mask: SearchMask) {
         guard let store else { return }
-        let path = ancestry(of: mask.focus(from: 0, in: store))
+        let path = ancestry(of: mask.focus(from: anchor, in: store))
         guard path != trail else {
             focusedTrail = trail
             return
@@ -2540,8 +2638,8 @@ final class ScanModel {
     /// A trail that may have gone stale — a folder trashed while the filter was
     /// up — truncated at the first entry that no longer holds.
     private func validated(_ candidate: [Int32]) -> [Int32] {
-        guard let store else { return [0] }
-        var result: [Int32] = [0]
+        guard let store else { return [anchor] }
+        var result: [Int32] = [anchor]
         for node in candidate.dropFirst() {
             guard Int(node) < store.count, !store.isEffectivelyDeleted(node)
             else { break }

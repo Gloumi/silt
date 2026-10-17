@@ -327,8 +327,10 @@ private struct BreadcrumbBar: View {
                     Button {
                         model.goTo(depth: depth)
                     } label: {
+                        // The first entry is the location itself, whose
+                        // name is a whole path when it is the scan root.
                         Text(depth == 0
-                             ? (store.path(of: 0) as NSString).lastPathComponent
+                             ? (store.path(of: node) as NSString).lastPathComponent
                              : store.name(of: node))
                             .fontWeight(depth == model.trail.count - 1 ? .semibold : .regular)
                     }
@@ -379,14 +381,20 @@ private struct StatusBar: View {
                 // Says how stale the numbers are, which matters now that a tree
                 // can come straight back from memory.
                 Text("analysé \(Format.age(since: scannedAt))")
+                if let origin = model.borrowedFromName {
+                    // Not scanned on its own: the age above is the bigger
+                    // tree's, and refreshing is how to get this folder's own.
+                    Text("avec « \(origin) »")
+                        .help("Ce dossier vient de l'analyse de « \(origin) ». Actualisez pour l'analyser seul.")
+                }
             }
             Spacer()
-            if let result = model.result, !result.unreadablePaths.isEmpty {
+            if !model.unreadablePaths.isEmpty {
                 Button {
                     model.showsWelcome = true
                 } label: {
                     Label(
-                        "\(result.unreadablePaths.count) dossiers illisibles",
+                        "\(model.unreadablePaths.count) dossiers illisibles",
                         systemImage: "lock"
                     )
                     .foregroundStyle(.orange)

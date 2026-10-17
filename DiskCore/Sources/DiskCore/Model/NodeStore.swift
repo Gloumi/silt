@@ -231,6 +231,24 @@ public struct NodeStore: Sendable {
         return current
     }
 
+    /// The node an absolute path names, or nil when it lies outside the scan
+    /// root or was never walked.
+    ///
+    /// What lets a folder be shown out of a tree scanned from higher up: a scan
+    /// of `/` already holds every folder of the home directory. The path is
+    /// matched as given — the caller resolves symlinks the way the scanner
+    /// resolved the root, since a store knows nothing of the disk.
+    public func node(atPath path: String) -> Int32? {
+        guard !isEmpty else { return nil }
+        let root = name(of: 0)
+        if path == root { return 0 }
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        guard path.hasPrefix(prefix) else { return nil }
+        let components = path.dropFirst(prefix.count)
+            .split(separator: "/").map(String.init)
+        return descendant(of: 0, at: components)
+    }
+
     public func children(of node: Int32) -> Range<Int32> {
         let start = childStart[Int(node)]
         return start..<(start + childCount[Int(node)])

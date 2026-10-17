@@ -268,6 +268,24 @@ struct ScanEngineTests {
         #expect(store.path(of: node) == expected)
     }
 
+    @Test("A path finds its node, and nothing outside the root does")
+    func nodeAtPath() async throws {
+        let fixture = try Fixture()
+        try fixture.file("one/two/three.bin", bytes: 100)
+
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let root = store.name(of: 0)
+        #expect(store.node(atPath: root) == 0)
+        let two = try #require(store.node(atPath: root + "/one/two"))
+        #expect(store.path(of: two) == root + "/one/two")
+        // A trailing slash names the same folder.
+        #expect(store.node(atPath: root + "/one/two/") == two)
+        #expect(store.node(atPath: root + "/one/missing") == nil)
+        // A sibling whose name merely starts like the root is not inside it.
+        #expect(store.node(atPath: root + "-other/one") == nil)
+        #expect(store.node(atPath: "/") == nil)
+    }
+
     @Test("Roll-up is consistent with the sum of every leaf")
     func rollUpConsistency() async throws {
         let fixture = try Fixture()
