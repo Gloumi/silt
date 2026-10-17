@@ -759,7 +759,9 @@ final class ScanModel {
     private(set) var selectedRootName: String?
 
     private struct CachedScan {
-        let result: ScanResult
+        // `var`: a deletion reaches the trees in the cache too, not only the
+        // one on screen.
+        var result: ScanResult
         let date: Date
     }
 
@@ -1538,9 +1540,7 @@ final class ScanModel {
         }
         let report = await Task.detached { SafeDeleter.delete(requests) }.value
 
-        for item in report.trashed {
-            if let node = item.node { result?.store.markDeleted(node) }
-        }
+        propagateDeletion(report.trashed)
         // Acting on a folder now means having opened it, so the deleted node is
         // often the one under our feet. Climb out before it becomes a view of
         // something that no longer exists.
@@ -1583,6 +1583,18 @@ final class ScanModel {
                 )
             }
         }
+        // The on-screen tree went back with its exact sizes above; the same
+        // paths may live in the cached trees, which have no such record.
+        reinstate(
+            items.filter { !failedPaths.contains($0.originalPath) }
+                .map(\.originalPath),
+            skipping: Set(items.compactMap { item in
+                guard !failedPaths.contains(item.originalPath),
+                      let node = item.node, undoSizes[node] != nil
+                else { return nil }
+                return node
+            })
+        )
         lastDeletion = nil
         undoSizes = [:]
         needsAppManagement = false
@@ -1598,6 +1610,82 @@ final class ScanModel {
         deletionEpoch += 1
         treeDidChange()
         refreshJunkIfShown()
+    }
+
+    // MARK: - Keeping every tree in step
+
+    /// Roots (`treeRootPath` or a cache key) whose tree has changed since it
+    /// was last saved. Only maintained here; the writer drains it.
+    private var unsavedRoots: Set<String> = []
+
+    /// Marks trashed items deleted in every tree in memory, not just the one on
+    /// screen. A location can be shown from a bigger tree (~/Downloads inside
+    /// the "/" tree), so the same path may live in several trees, and trees now
+    /// outlive the app: one left untouched would keep counting deleted files.
+    /// `markDeleted` is idempotent, so an item found twice costs nothing.
+    private func propagateDeletion(_ items: [TrashedItem]) {
+        if result != nil {
+            var touched = false
+            for item in items {
+                guard let node = item.node
+                    ?? result?.store.node(atPath: item.originalPath)
+                else { continue }
+                result?.store.markDeleted(node)
+                touched = true
+            }
+            if touched, let root = treeRootPath { unsavedRoots.insert(root) }
+        }
+        for index in cache.indices {
+            var touched = false
+            for item in items {
+                guard let node = cache[index].scan.result.store
+                    .node(atPath: item.originalPath)
+                else { continue }
+                cache[index].scan.result.store.markDeleted(node)
+                touched = true
+            }
+            if touched { unsavedRoots.insert(cache[index].path) }
+        }
+    }
+
+    /// Brings put-back items back into every tree in memory, measuring each
+    /// from disk. `skipping` holds the on-screen nodes the banner's undo has
+    /// already reinstated: that path keeps its exact recorded sizes instead of
+    /// a re-measurement.
+    private func reinstate(_ paths: [String], skipping handled: Set<Int32>) {
+        if result != nil {
+            var touched = false
+            for path in paths {
+                guard let store = result?.store,
+                      let node = store.node(atPath: path),
+                      !handled.contains(node),
+                      store.flags[Int(node)].contains(.deleted),
+                      let sizes = store.reinstatedSizes(of: node, at: path)
+                else { continue }
+                result?.store.unmarkDeleted(
+                    node, alloc: sizes.alloc,
+                    logical: sizes.logical, files: sizes.files
+                )
+                touched = true
+            }
+            if touched, let root = treeRootPath { unsavedRoots.insert(root) }
+        }
+        for index in cache.indices {
+            var touched = false
+            for path in paths {
+                let store = cache[index].scan.result.store
+                guard let node = store.node(atPath: path),
+                      store.flags[Int(node)].contains(.deleted),
+                      let sizes = store.reinstatedSizes(of: node, at: path)
+                else { continue }
+                cache[index].scan.result.store.unmarkDeleted(
+                    node, alloc: sizes.alloc,
+                    logical: sizes.logical, files: sizes.files
+                )
+                touched = true
+            }
+            if touched { unsavedRoots.insert(cache[index].path) }
+        }
     }
 
     func dismissDeletionMessage() {
@@ -1669,10 +1757,10 @@ final class ScanModel {
 
     /// Puts back a selection from the Corbeille tool.
     ///
-    /// Unlike the banner's undo this cannot repair the tree's roll-up — the
-    /// nodes these came from belong to a scan that may no longer exist — so the
-    /// figures are refreshed and the next scan tells the truth. Restoring the
-    /// file itself is identical either way.
+    /// Unlike the banner's undo there is no recorded size to put back — the
+    /// nodes these came from belong to a scan that may no longer exist — so each
+    /// tree in memory that still holds the path as deleted re-measures it from
+    /// disk (`reinstate`). Restoring the file itself is identical either way.
     func restoreFromTrash(_ entries: [TrashLedgerEntry]) async {
         guard !entries.isEmpty else { return }
         let items = entries.map(\.item)
@@ -1686,6 +1774,12 @@ final class ScanModel {
         // the trash was emptied since. Re-probing retires those too, instead of
         // leaving an entry that will fail the same way for ever.
         await refreshRestorable()
+
+        reinstate(
+            entries.filter { !failedPaths.contains($0.originalPath) }
+                .map(\.originalPath),
+            skipping: []
+        )
 
         let restored = entries.count - failures.count
         var parts: [String] = []
@@ -1810,9 +1904,7 @@ final class ScanModel {
             SafeDeleter.delete(requests)
         }.value
 
-        for item in report.trashed {
-            if let node = item.node { result?.store.markDeleted(node) }
-        }
+        propagateDeletion(report.trashed)
         let removed = Set(report.trashed.compactMap(\.node))
         if let index = trail.firstIndex(where: removed.contains) {
             trail.removeSubrange(max(1, index)...)
