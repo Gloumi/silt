@@ -945,6 +945,12 @@ final class ScanModel {
         scanTask?.cancel()
         stashCurrentScan()
         cache.removeAll { $0.path == path }
+        // The old tree has just left memory, and the new one may never finish
+        // — cancelled, or dropped when another location is shown. Left on
+        // disk, its file would miss every deletion from here on and come back
+        // stale at the next launch. The new walk saves its own when it ends;
+        // until then the location honestly has no saved analysis.
+        discardSavedScan(of: path)
 
         anchor = 0
         trail = [0]
@@ -1835,8 +1841,16 @@ final class ScanModel {
             // Memory wins: the tree on screen or being walked, or one already
             // cached, is at least as fresh as its saved copy and may carry
             // deletions the copy has not seen.
-            guard scan.rootPath != treeRootPath,
-                  !cache.contains(where: { $0.path == scan.rootPath }),
+            if scan.rootPath == treeRootPath {
+                // A walk of that root in flight, or one that was cancelled,
+                // holds no finished tree to keep the file in step: drop it,
+                // as `scan` does. A finished tree on screen saves over it.
+                let finished = (result.map { !$0.wasCancelled } ?? false)
+                    && scannedAt != nil && !isScanning
+                if !finished { discardSavedScan(of: scan.rootPath) }
+                continue
+            }
+            guard !cache.contains(where: { $0.path == scan.rootPath }),
                   !arrived.contains(where: { $0.path == scan.rootPath })
             else { continue }
             var tree = scan.result
