@@ -93,20 +93,45 @@ enum ScanVault {
     private static let service = "app.silt.mac.scans"
     private static let accountDefaultsKey = "scanKeyAccount"
 
-    /// Read once per launch. The lock also serialises the first read, so two
-    /// background tasks cannot each create a key and wipe the other's files.
-    private static let cachedKey = Mutex<SymmetricKey?>(nil)
+    /// What this launch knows about the key. Three states rather than an
+    /// optional: "not looked yet" has to differ from "looked, and there is
+    /// none to be had", or every save would knock on the keychain again — and
+    /// on a locked one, each knock could be another prompt.
+    private enum KeyState {
+        case unknown
+        case key(SymmetricKey)
+        /// The keychain is locked, or the new key could not be stored: the
+        /// vault stays off until the next launch, files untouched.
+        case unavailable
+    }
+
+    /// One keychain attempt per launch at most. The lock also serialises it,
+    /// so two background tasks cannot each create a key and wipe the other's
+    /// files.
+    private static let keyState = Mutex<KeyState>(.unknown)
     #endif
 
     private static func sealingKey() -> Sealing? {
         #if DEBUG
         return Sealing(value: nil)
         #else
-        return cachedKey.withLock { cached in
-            if let cached { return Sealing(value: cached) }
-            let key = readKey() ?? createKey()
-            cached = key
-            return key.map { Sealing(value: $0) }
+        return keyState.withLock { state in
+            switch state {
+            case .key(let key):
+                return Sealing(value: key)
+            case .unavailable:
+                return nil
+            case .unknown:
+                // A failed read means two very different things. Locked, the
+                // keychain refuses every build, the right one included: the
+                // key is still there and the files still good, so nothing is
+                // created or wiped. Unlocked, the refusal is aimed at this
+                // build — an ad-hoc signed update cannot read its
+                // predecessor's item — and the key is lost for good.
+                let key = readKey() ?? (isDefaultKeychainUnlocked() ? createKey() : nil)
+                state = key.map { .key($0) } ?? .unavailable
+                return key.map { Sealing(value: $0) }
+            }
         }
         #endif
     }
@@ -115,7 +140,8 @@ enum ScanVault {
     /// Never shows a keychain dialog: with `UIFail` a read that would need the
     /// user returns an error instead. An ad-hoc signed build cannot read the
     /// item its predecessor created, so that error is the normal case after an
-    /// update, and the caller answers it with a new key.
+    /// update — but a locked keychain answers with the very same error, which
+    /// is why the caller checks the lock before treating it as a lost key.
     private static func readKey() -> SymmetricKey? {
         guard let account = UserDefaults.standard.string(forKey: accountDefaultsKey) else { return nil }
         let query: [String: Any] = [
@@ -132,10 +158,20 @@ enum ScanVault {
         return SymmetricKey(data: data)
     }
 
+    /// Whether the default keychain — the login keychain, where a generic
+    /// password without the data-protection flag goes — is unlocked. Anything
+    /// that cannot be told counts as locked: wrongly keeping the vault off for
+    /// a launch costs a rescan, wrongly wiping it costs every saved analysis.
+    private static func isDefaultKeychainUnlocked() -> Bool {
+        (LegacyKeychainProbe() as any KeychainLockProbe).isDefaultKeychainUnlocked()
+    }
+
     /// Replaces a key that cannot be read. The old item is left in the keychain:
     /// deleting it could raise the very dialog this avoids. A fresh account name
     /// sidesteps it, and the files sealed with the lost key are emptied since
-    /// nothing can open them. If the new key cannot be stored the vault stays
+    /// nothing can open them. `UIFail` on the add too: the keychain was found
+    /// unlocked a moment ago, but if it locked since, an add without it would
+    /// ask for the password. If the new key cannot be stored the vault stays
     /// off: a key that would not survive the launch only produces files that
     /// the next launch deletes.
     private static func createKey() -> SymmetricKey? {
@@ -147,6 +183,7 @@ enum ScanVault {
             kSecAttrAccount as String: account,
             kSecValueData as String: key.withUnsafeBytes { Data($0) },
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
         guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { return nil }
         UserDefaults.standard.set(account, forKey: accountDefaultsKey)
@@ -155,3 +192,25 @@ enum ScanVault {
     }
     #endif
 }
+
+#if !DEBUG
+/// The lock state of the legacy file-based keychain has no modern API:
+/// `SecKeychainGetStatus` is deprecated but still exact for it, and it is the
+/// keychain the vault's key lives in. Called through a protocol so the one
+/// deliberate use does not warn on every build.
+private protocol KeychainLockProbe {
+    func isDefaultKeychainUnlocked() -> Bool
+}
+
+private struct LegacyKeychainProbe: KeychainLockProbe {
+    @available(macOS, deprecated: 10.10)
+    func isDefaultKeychainUnlocked() -> Bool {
+        var keychain: SecKeychain?
+        guard SecKeychainCopyDefault(&keychain) == errSecSuccess,
+              let keychain else { return false }
+        var status: SecKeychainStatus = 0
+        guard SecKeychainGetStatus(keychain, &status) == errSecSuccess else { return false }
+        return status & SecKeychainStatus(kSecUnlockStateStatus) != 0
+    }
+}
+#endif
