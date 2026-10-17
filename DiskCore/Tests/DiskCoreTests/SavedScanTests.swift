@@ -80,4 +80,44 @@ struct SavedScanTests {
         let fine = saved.encoded(corruptingParentOf: 1, with: 0)
         #expect(SavedScan(decoding: fine) != nil)
     }
+
+    /// Root with two children, as the scanner would lay it out. Each case
+    /// below breaks exactly one thing.
+    private func store(
+        parent: [Int32] = [0, 0, 0],
+        childStart: [Int32] = [1, 0, 0],
+        childCount: [Int32] = [2, 0, 0],
+        nameOffset: [UInt32] = [0, 1, 2],
+        nameLength: [UInt16] = [1, 1, 1],
+        nameBlob: [UInt8] = [97, 98, 99],
+        totalAlloc: [Int64] = [0, 0, 0]
+    ) -> NodeStore? {
+        NodeStore(
+            validating: nameBlob, nameOffset: nameOffset, nameLength: nameLength,
+            parent: parent, childStart: childStart, childCount: childCount,
+            totalAlloc: totalAlloc, totalLogical: [0, 0, 0], fileCount: [0, 0, 0],
+            modTime: [0, 0, 0], flags: [.directory, [], []]
+        )
+    }
+
+    @Test("The validating initialiser accepts a well-formed tree")
+    func acceptsWellFormed() {
+        #expect(store() != nil)
+    }
+
+    @Test("Trees that break the store's invariants are refused")
+    func rejectsBrokenInvariants() {
+        #expect(store(parent: [1, 0, 0]) == nil)          // root not its own parent
+        #expect(store(parent: [0, 2, 0]) == nil)          // parent after child
+        #expect(store(parent: [0, -1, 0]) == nil)         // negative parent
+        #expect(store(childStart: [-1, 0, 0]) == nil)     // negative start
+        #expect(store(childCount: [-1, 0, 0]) == nil)     // negative count
+        #expect(store(childStart: [2, 0, 0]) == nil)      // range past the end
+        #expect(store(childStart: [0, 0, 0], childCount: [3, 0, 0]) == nil) // contains root
+        #expect(store(childStart: [1, 1, 0], childCount: [2, 1, 0]) == nil) // child claims itself
+        #expect(store(parent: [0, 0, 1]) == nil)          // child of the wrong parent
+        #expect(store(nameLength: [1, 1, 2]) == nil)      // name past the blob
+        #expect(store(nameOffset: [0, 1, 4]) == nil)
+        #expect(store(totalAlloc: [0, 0]) == nil)         // mismatched lengths
+    }
 }

@@ -85,7 +85,8 @@ public struct NodeStore: Sendable {
     /// Everything else here indexes these arrays unchecked, so the invariants
     /// the scanner guarantees by construction are verified instead of trusted:
     /// equal lengths, a root that is its own parent, parents before children,
-    /// child ranges and names inside their arrays.
+    /// child ranges inside the array and made of exactly the node's own
+    /// children, names inside the blob.
     init?(
         validating nameBlob: [UInt8],
         nameOffset: [UInt32], nameLength: [UInt16],
@@ -105,6 +106,15 @@ public struct NodeStore: Sendable {
             if i > 0, parent[i] < 0 || Int(parent[i]) >= i { return nil }
             let start = Int(childStart[i]), count = Int(childCount[i])
             if start < 0 || count < 0 || start + count > n { return nil }
+            // A range that includes its own owner, or a node whose parent
+            // disagrees, would send every recursive walker round in circles.
+            // Each node has one parent, so this also keeps ranges disjoint.
+            if count > 0 {
+                if start <= i { return nil }
+                for child in start..<(start + count) where Int(parent[child]) != i {
+                    return nil
+                }
+            }
             if Int(nameOffset[i]) + Int(nameLength[i]) > nameBlob.count { return nil }
         }
         self.nameBlob = nameBlob
