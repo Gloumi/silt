@@ -119,6 +119,7 @@ final class Preferences {
         static let duplicateThreshold = "duplicateSizeThreshold"
         static let duplicateFolderThreshold = "duplicateFolderSizeThreshold"
         static let checksForUpdates = "checksForUpdates"
+        static let lastLocation = "lastLocation"
     }
 
     /// Both thresholds are plain byte counts, which is what the three-way menus
@@ -299,6 +300,21 @@ final class Preferences {
         didSet { UserDefaults.standard.set(checksForUpdates, forKey: Key.checksForUpdates) }
     }
 
+    /// Where the sidebar pointed when the app was last used, and what its row
+    /// called it. Saved scans bring the tree back at launch; this brings back
+    /// the place, so the window reopens on what the user was looking at rather
+    /// than on the boot volume. Stored as `[path, name]`.
+    var lastLocation: (path: String, name: String)? {
+        didSet {
+            if let lastLocation {
+                UserDefaults.standard.set([lastLocation.path, lastLocation.name],
+                                          forKey: Key.lastLocation)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Key.lastLocation)
+            }
+        }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [
@@ -326,6 +342,8 @@ final class Preferences {
         largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
             .flatMap(AgeFilter.init(rawValue:)) ?? .all
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
+        lastLocation = defaults.stringArray(forKey: Key.lastLocation)
+            .flatMap { $0.count == 2 ? (path: $0[0], name: $0[1]) : nil }
         let storedFile = Int64(defaults.integer(forKey: Key.duplicateThreshold))
         duplicateThresholdBytes = storedFile > 0
             ? SizeLadder.bytes(
@@ -352,7 +370,8 @@ final class Preferences {
     /// les réglages" is a surprise nobody asked for, and the Emplacements pane
     /// already has a way to remove them one at a time. `hasSeenWelcome` and
     /// `lastUsedPresentation` are app state rather than settings — clearing
-    /// the first would replay the welcome sheet at the next launch.
+    /// the first would replay the welcome sheet at the next launch. So is
+    /// `lastLocation`: it records where the user was, not how the app behaves.
     func resetToDefaults() {
         useLogicalSize = false
         descendIntoPackages = false

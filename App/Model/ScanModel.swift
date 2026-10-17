@@ -930,7 +930,9 @@ final class ScanModel {
         // else — the Open panel, a drag onto the window.
         if selectedRoot != path {
             selectedRoot = path
-            selectedRootName = QuickLocation.displayName(of: path)
+            let name = QuickLocation.displayName(of: path)
+            selectedRootName = name
+            Preferences.shared.lastLocation = (path, name)
         }
 
         if !force, rootPath == path, isScanning || result != nil { return }
@@ -995,6 +997,12 @@ final class ScanModel {
                 partialStore = nil
                 scannedAt = Date()
                 phase = .loaded
+                // Only a finished walk is worth keeping across launches; a
+                // forced rescan replaces its root's file here too.
+                if let root = treeRootPath {
+                    unsavedRoots.insert(root)
+                    scheduleSave()
+                }
                 // Deliberately not a new scanID: indices are append-only within
                 // a scan, so the final tree agrees with the last snapshot and
                 // the view settles into it rather than flashing.
@@ -1015,7 +1023,9 @@ final class ScanModel {
     /// supposed to feel like — so that case is honoured immediately.
     func select(path: String, name: String? = nil) {
         selectedRoot = path
-        selectedRootName = name ?? QuickLocation.displayName(of: path)
+        let name = name ?? QuickLocation.displayName(of: path)
+        selectedRootName = name
+        Preferences.shared.lastLocation = (path, name)
         // Every selection lands in the folder's own view, or the global
         // default without one. With a fixed global default a view picked by
         // hand lasts only until the next selection; in "Dernière utilisée"
@@ -1063,7 +1073,10 @@ final class ScanModel {
         while cache.count > Self.cacheLimit {
             // The boot volume's tree answers for every folder on it, so two
             // small scans must not push it out: it goes last.
-            cache.remove(at: cache.firstIndex { $0.path != "/" } ?? 0)
+            let evicted = cache.remove(at: cache.firstIndex { $0.path != "/" } ?? 0)
+            // Its file goes with it. Nothing in memory would keep it in step
+            // with later deletions, so it could only come back stale.
+            discardSavedScan(of: evicted.path)
         }
     }
 
@@ -1581,6 +1594,9 @@ final class ScanModel {
                     node, alloc: sizes.alloc,
                     logical: sizes.logical, files: sizes.files
                 )
+                // `reinstate` skips these nodes below, so it would not mark
+                // the tree changed on their account.
+                if let root = treeRootPath { unsavedRoots.insert(root) }
             }
         }
         // The on-screen tree went back with its exact sizes above; the same
@@ -1616,7 +1632,9 @@ final class ScanModel {
 
     /// Roots (`treeRootPath` or a cache key) whose tree has changed since it
     /// was last saved. Only maintained here; the writer drains it.
-    private var unsavedRoots: Set<String> = []
+    private var unsavedRoots: Set<String> = [] {
+        didSet { updateTerminationHold() }
+    }
 
     /// Marks trashed items deleted in every tree in memory, not just the one on
     /// screen. A location can be shown from a bigger tree (~/Downloads inside
@@ -1624,6 +1642,10 @@ final class ScanModel {
     /// outlive the app: one left untouched would keep counting deleted files.
     /// `markDeleted` is idempotent, so an item found twice costs nothing.
     private func propagateDeletion(_ items: [TrashedItem]) {
+        defer { scheduleSave() }
+        if isLoadingSavedScans {
+            editsDuringLoad.append(.trashed(items.map(\.originalPath)))
+        }
         if result != nil {
             var touched = false
             for item in items {
@@ -1653,6 +1675,10 @@ final class ScanModel {
     /// already reinstated: that path keeps its exact recorded sizes instead of
     /// a re-measurement.
     private func reinstate(_ paths: [String], skipping handled: Set<Int32>) {
+        defer { scheduleSave() }
+        // All of `paths`, skipped ones included: the saved trees still loading
+        // hold none of the exact sizes the skip is about.
+        if isLoadingSavedScans { editsDuringLoad.append(.reinstated(paths)) }
         if result != nil {
             var touched = false
             for path in paths {
@@ -1737,6 +1763,232 @@ final class ScanModel {
             deletionMessage = restorable.isEmpty
                 ? "Le Finder n'a pas pu vider la corbeille."
                 : "Le Finder n'a pas pu vider la corbeille — \(restorable.count) élément(s) y sont encore, restaurables depuis « Corbeille »."
+        }
+    }
+
+    // MARK: - Saved scans
+
+    /// A change made to the trees in memory while the saved ones were still
+    /// being read, kept by path so it can be replayed on them once they arrive.
+    private enum TreeEdit {
+        case trashed([String])
+        case reinstated([String])
+    }
+
+    private var hasLoadedSavedScans = false
+    private var isLoadingSavedScans = false
+    private var editsDuringLoad: [TreeEdit] = []
+    /// The pending debounced write, cancelled and replaced on every change.
+    private var saveTask: Task<Void, Never>?
+    /// Vault jobs queued and not yet done. With `unsavedRoots`, what decides
+    /// whether the app may still be killed without warning.
+    private var pendingVaultJobs = 0 {
+        didSet { updateTerminationHold() }
+    }
+    private var holdsTermination = false
+
+    /// Every write and removal goes through one serial queue rather than a
+    /// detached task each. Order is the point: two saves of the same root, or a
+    /// save and the removal that follows an eviction, must land in the order
+    /// they were decided, or an older tree overwrites a newer one and an
+    /// evicted file comes back. A queue also lets the final flush wait for
+    /// whatever is still in flight, which a fire-and-forget task cannot.
+    private static let vaultQueue = DispatchQueue(
+        label: "app.silt.mac.scan-vault", qos: .utility)
+
+    /// Reads back the scans saved by earlier launches into the cache, and puts
+    /// the selected location on screen if one of them holds it.
+    ///
+    /// Reading takes a while on a big tree, and the user may start working in
+    /// the meantime. Nothing they did is overridden: a tree already in memory
+    /// wins over its saved copy, and deletions made during the read are
+    /// replayed on what arrives.
+    func loadSavedScans() {
+        guard !hasLoadedSavedScans else { return }
+        hasLoadedSavedScans = true
+        isLoadingSavedScans = true
+        Task { [weak self] in
+            let saved = await Task.detached(priority: .userInitiated) {
+                ScanVault.loadAll()
+            }.value
+            self?.adopt(saved)
+        }
+    }
+
+    private func adopt(_ saved: [SavedScan]) {
+        isLoadingSavedScans = false
+        let edits = editsDuringLoad
+        editsDuringLoad = []
+
+        // Every reason to leave a saved scan on disk rather than bring it back
+        // is decided in this one loop.
+        var vetted: [SavedScan] = []
+        for scan in saved {
+            // An external volume that is not plugged in, a folder renamed: the
+            // file is kept, since the volume may well come back.
+            guard FileManager.default.fileExists(atPath: scan.rootPath) else { continue }
+            vetted.append(scan)
+        }
+
+        var arrived: [(path: String, scan: CachedScan)] = []
+        for scan in vetted.sorted(by: { $0.scannedAt < $1.scannedAt }) {
+            // Memory wins: the tree on screen or being walked, or one already
+            // cached, is at least as fresh as its saved copy and may carry
+            // deletions the copy has not seen.
+            guard scan.rootPath != treeRootPath,
+                  !cache.contains(where: { $0.path == scan.rootPath }),
+                  !arrived.contains(where: { $0.path == scan.rootPath })
+            else { continue }
+            var tree = scan.result
+            if Self.replay(edits, on: &tree) { unsavedRoots.insert(scan.rootPath) }
+            arrived.append((scan.rootPath, CachedScan(result: tree, date: scan.scannedAt)))
+        }
+        // In front: the cache is ordered oldest first and evicts from the
+        // front, and these predate everything this session has cached.
+        cache.insert(contentsOf: arrived, at: 0)
+
+        // Only on a window still waiting: a scan the user started, or a tree
+        // they are already looking at, is not swapped out from under them.
+        if result == nil, !isScanning, let selectedRoot,
+           let found = tree(holding: selectedRoot) {
+            show(found, at: selectedRoot)
+        }
+
+        // Over the limit, only what just arrived makes room — oldest first,
+        // the boot volume last, as in `stashCurrentScan`. Its file goes too:
+        // a tree left out of memory would miss this session's deletions.
+        let arrivedRoots = Set(arrived.map(\.path))
+        while cache.count > Self.cacheLimit {
+            guard let index = cache.firstIndex(where: {
+                arrivedRoots.contains($0.path) && $0.path != "/"
+            }) ?? cache.firstIndex(where: { arrivedRoots.contains($0.path) })
+            else { break }
+            discardSavedScan(of: cache.remove(at: index).path)
+        }
+        scheduleSave()
+    }
+
+    /// Applies deletions and put-backs to a tree that was not in memory when
+    /// they happened. By path, since node indices mean nothing across trees.
+    /// Reads `result.store` afresh each time rather than holding a copy, which
+    /// would make every mutation duplicate the whole store.
+    private static func replay(_ edits: [TreeEdit], on result: inout ScanResult) -> Bool {
+        var touched = false
+        for edit in edits {
+            switch edit {
+            case .trashed(let paths):
+                for path in paths {
+                    guard let node = result.store.node(atPath: path) else { continue }
+                    result.store.markDeleted(node)
+                    touched = true
+                }
+            case .reinstated(let paths):
+                for path in paths {
+                    guard let node = result.store.node(atPath: path),
+                          result.store.flags[Int(node)].contains(.deleted),
+                          let sizes = result.store.reinstatedSizes(of: node, at: path)
+                    else { continue }
+                    result.store.unmarkDeleted(
+                        node, alloc: sizes.alloc,
+                        logical: sizes.logical, files: sizes.files
+                    )
+                    touched = true
+                }
+            }
+        }
+        return touched
+    }
+
+    /// Writes the changed trees after three quiet seconds. A batch deletion, or
+    /// an undo right behind it, would otherwise rewrite a multi-megabyte file
+    /// per step.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = nil
+        guard !unsavedRoots.isEmpty else { return }
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            saveTask = nil
+            let (scans, stale) = takeUnsavedScans()
+            enqueueVaultJob {
+                for root in stale { ScanVault.remove(rootPath: root) }
+                for scan in scans { ScanVault.save(scan) }
+            }
+        }
+    }
+
+    /// Last chance at quit: writes whatever is still unsaved, after anything
+    /// already queued, and blocks until it is on disk. The main thread waiting
+    /// is fine here — the app is going away, and there is no later moment.
+    func flushUnsavedScans() {
+        saveTask?.cancel()
+        saveTask = nil
+        let (scans, stale) = takeUnsavedScans()
+        Self.vaultQueue.sync {
+            for root in stale { ScanVault.remove(rootPath: root) }
+            for scan in scans { ScanVault.save(scan) }
+        }
+    }
+
+    /// Snapshots the unsaved trees on the main actor, so the write that follows
+    /// works on values no deletion can reach. Only the roots captured here
+    /// leave `unsavedRoots`: a deletion landing during the write marks its root
+    /// again and is picked up by the next save.
+    ///
+    /// A root with no finished tree left — the one on screen was cancelled, or
+    /// a forced rescan is under way — has a file that no longer agrees with
+    /// what was deleted from it, and nothing complete to replace it with. That
+    /// file is removed rather than left to come back stale.
+    private func takeUnsavedScans() -> (scans: [SavedScan], stale: [String]) {
+        var scans: [SavedScan] = []
+        var stale: [String] = []
+        for root in unsavedRoots {
+            if root == treeRootPath, let result, let scannedAt, !result.wasCancelled {
+                scans.append(SavedScan(rootPath: root, scannedAt: scannedAt, result: result))
+            } else if let entry = cache.first(where: { $0.path == root }),
+                      !entry.scan.result.wasCancelled {
+                scans.append(SavedScan(
+                    rootPath: root, scannedAt: entry.scan.date, result: entry.scan.result))
+            } else {
+                stale.append(root)
+            }
+        }
+        unsavedRoots.subtract(scans.map(\.rootPath))
+        unsavedRoots.subtract(stale)
+        return (scans, stale)
+    }
+
+    /// Forgets a root's saved scan, in memory and on disk.
+    private func discardSavedScan(of root: String) {
+        unsavedRoots.remove(root)
+        enqueueVaultJob { ScanVault.remove(rootPath: root) }
+    }
+
+    private func enqueueVaultJob(_ job: @escaping @Sendable () -> Void) {
+        pendingVaultJobs += 1
+        Self.vaultQueue.async { [weak self] in
+            job()
+            Task { @MainActor in self?.pendingVaultJobs -= 1 }
+        }
+    }
+
+    /// Silt declares sudden termination, so at logout or restart the system may
+    /// kill it outright — no `willTerminate`, no flush. While a change is
+    /// waiting to be written that would lose it, and the next launch would
+    /// show trashed files as still there; so the permission is withdrawn for
+    /// exactly that long.
+    private func updateTerminationHold() {
+        let needed = !unsavedRoots.isEmpty || pendingVaultJobs > 0
+        guard needed != holdsTermination else { return }
+        holdsTermination = needed
+        let process = ProcessInfo.processInfo
+        if needed {
+            process.disableSuddenTermination()
+            process.disableAutomaticTermination("Saving scans")
+        } else {
+            process.enableSuddenTermination()
+            process.enableAutomaticTermination("Saving scans")
         }
     }
 

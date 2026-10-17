@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct SiltApp: App {
     static let settingsWindow = "settings"
 
-    @State private var model = ScanModel()
+    @State private var model: ScanModel
     /// The browser's sidebar, held up here because the menu item that toggles
     /// it is declared up here too — `.commands` belongs to the app, not to a
     /// window.
@@ -14,6 +14,22 @@ struct SiltApp: App {
     /// Only here to put a Quick Look controller at the end of the responder
     /// chain; see QuickLookPanel.
     @NSApplicationDelegateAdaptor(QuickLookController.self) private var quickLook
+
+    init() {
+        let model = ScanModel()
+        _model = State(initialValue: model)
+        // Observed here rather than from a view: the window can be closed
+        // while the app keeps running, and a view that is gone hears nothing.
+        // No queue, so the block runs on the posting thread — the main one —
+        // before the notification returns, which is what makes a synchronous
+        // flush the last thing done before exit.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: nil
+        ) { _ in
+            MainActor.assumeIsolated { model.flushUnsavedScans() }
+        }
+    }
 
     var body: some Scene {
         Window("Silt", id: "main") {

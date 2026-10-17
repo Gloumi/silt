@@ -177,11 +177,20 @@ struct SidebarView: View {
         }
         .task {
             refreshVolumes()
-            // Open pointing at the boot volume, without scanning it. Starting a
-            // multi-minute walk of the whole disk because someone opened the
-            // app is not a decision to make on their behalf.
-            if model.selectedRoot == nil, let first = volumes.first {
-                model.select(path: first.url.path, name: first.name)
+            // Open pointing where the user last was — or, failing that, at the
+            // boot volume — without scanning it. Starting a multi-minute walk
+            // of the whole disk because someone opened the app is not a
+            // decision to make on their behalf. The saved scans are asked for
+            // first: they arrive later, and put the tree back under whatever
+            // is selected by then if one of them holds it.
+            if model.selectedRoot == nil {
+                model.loadSavedScans()
+                if let last = Preferences.shared.lastLocation,
+                   FileManager.default.fileExists(atPath: last.path) {
+                    model.select(path: last.path, name: last.name)
+                } else if let first = volumes.first {
+                    model.select(path: first.url.path, name: first.name)
+                }
             }
             // The gauges must track what other apps do to the disk, and no
             // notification covers "some process wrote or freed bytes" — so a
