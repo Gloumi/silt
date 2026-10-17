@@ -99,9 +99,13 @@ struct BrowserView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Over the whole group, not inside the list: the charts draw a
                 // blank canvas when nothing survives the filter and have no
-                // empty state of their own to say why.
+                // empty state of their own to say why. The extract and the
+                // duplicates do have one, worded for what they list; laid over
+                // it, this one printed both sentences on top of each other.
                 .overlay {
-                    if model.isFiltering, model.rows.isEmpty {
+                    if model.isFiltering, model.rows.isEmpty,
+                       model.presentation != .largeFiles,
+                       model.presentation != .duplicates {
                         ContentUnavailableView.search(text: model.searchText)
                     }
                 }
