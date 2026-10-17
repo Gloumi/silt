@@ -79,6 +79,47 @@ public struct NodeStore: Sendable {
 
     public init() {}
 
+    /// Rebuilds a store from arrays read off disk, or nil if they could not
+    /// have come from a scan.
+    ///
+    /// Everything else here indexes these arrays unchecked, so the invariants
+    /// the scanner guarantees by construction are verified instead of trusted:
+    /// equal lengths, a root that is its own parent, parents before children,
+    /// child ranges and names inside their arrays.
+    init?(
+        validating nameBlob: [UInt8],
+        nameOffset: [UInt32], nameLength: [UInt16],
+        parent: [Int32], childStart: [Int32], childCount: [Int32],
+        totalAlloc: [Int64], totalLogical: [Int64], fileCount: [Int32],
+        modTime: [Int32], flags: [NodeFlags]
+    ) {
+        let n = parent.count
+        guard n > 0,
+              nameOffset.count == n, nameLength.count == n,
+              childStart.count == n, childCount.count == n,
+              totalAlloc.count == n, totalLogical.count == n,
+              fileCount.count == n, modTime.count == n, flags.count == n,
+              parent[0] == 0
+        else { return nil }
+        for i in 0..<n {
+            if i > 0, parent[i] < 0 || Int(parent[i]) >= i { return nil }
+            let start = Int(childStart[i]), count = Int(childCount[i])
+            if start < 0 || count < 0 || start + count > n { return nil }
+            if Int(nameOffset[i]) + Int(nameLength[i]) > nameBlob.count { return nil }
+        }
+        self.nameBlob = nameBlob
+        self.nameOffset = nameOffset
+        self.nameLength = nameLength
+        self.parent = parent
+        self.childStart = childStart
+        self.childCount = childCount
+        self.totalAlloc = totalAlloc
+        self.totalLogical = totalLogical
+        self.fileCount = fileCount
+        self.modTime = modTime
+        self.flags = flags
+    }
+
     public mutating func reserveCapacity(_ n: Int) {
         nameBlob.reserveCapacity(n * 24)
         nameOffset.reserveCapacity(n)
