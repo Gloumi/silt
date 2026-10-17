@@ -46,8 +46,9 @@ public enum DiskCheck {
     /// `st_size` is the data fork only (the uncompressed size for an
     /// HFS-compressed file), whereas the scan records `ATTR_FILE_TOTALSIZE`
     /// and `ATTR_FILE_ALLOCSIZE`. Comparing the two would flag every file with
-    /// a resource fork as modified.
-    private static func sizes(of path: String, fallback: stat) -> (total: Int64, alloc: Int64) {
+    /// a resource fork as modified. Shared with `NodeStore.remeasure`, which
+    /// has to give back what the scan recorded for the same reason.
+    static func sizes(of path: String, fallback: stat) -> (total: Int64, alloc: Int64) {
         var list = attrlist()
         list.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
         list.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS)

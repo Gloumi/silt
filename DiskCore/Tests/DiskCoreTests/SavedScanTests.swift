@@ -177,17 +177,23 @@ struct ReinstatedSizesTests {
         return fixture
     }
 
-    private func roundTrip(_ relative: String) async throws {
-        let fixture = try fixture()
+    /// Trashes `relative` in a fresh scan of `fixture`, brings it back the
+    /// way the app does — measured from disk on its own, then applied to the
+    /// tree — and checks the node and the root read as before.
+    private func roundTrip(
+        _ fixture: borrowing Fixture, _ relative: String
+    ) async throws {
         var store = await ScanEngine.scan(root: fixture.path).store
         let root = store.name(of: 0)
         let node = try #require(store.node(atPath: root + relative))
         let before = totals(store, node), rootBefore = totals(store, 0)
 
         store.markDeleted(node)
-        let back = try #require(
-            store.reinstatedSizes(of: node, at: root + relative)
-        )
+        let measured = try #require(NodeStore.remeasure(
+            root + relative,
+            withContents: store.needsContentsToReinstate(node)
+        ))
+        let back = try #require(store.reinstatedSizes(of: node, from: measured))
         store.unmarkDeleted(node, alloc: back.alloc, logical: back.logical, files: back.files)
 
         #expect(totals(store, node) == before)
@@ -196,12 +202,67 @@ struct ReinstatedSizesTests {
 
     @Test("A file comes back with its size")
     func fileComesBackWithItsSize() async throws {
-        try await roundTrip("/x/one.bin")
+        try await roundTrip(fixture(), "/x/one.bin")
     }
 
     @Test("A folder comes back with its size")
     func folderComesBackWithItsSize() async throws {
-        try await roundTrip("/x")
+        try await roundTrip(fixture(), "/x")
+    }
+
+    @Test("A file with a resource fork comes back with the size the scan recorded")
+    func resourceForkCountsAsTheScanCountsIt() async throws {
+        let fixture = try fixture()
+        let path = fixture.root.appendingPathComponent("x/one.bin").path
+        let fork = [UInt8](repeating: 7, count: 6_000)
+        #expect(setxattr(path, "com.apple.ResourceFork", fork, fork.count, 0, 0) == 0)
+        try await roundTrip(fixture, "/x/one.bin")
+    }
+
+    @Test("A package the scan did not descend into comes back with its size")
+    func packageComesBackWithItsSize() async throws {
+        let fixture = try Fixture()
+        try fixture.file("Thing.app/Contents/MacOS/Thing", bytes: 9_000)
+        try fixture.file("Thing.app/Contents/Info.plist", bytes: 700)
+        try fixture.file("Thing.app/Contents/Resources/a.bin", bytes: 30_000)
+        try fixture.symlink("MacOS/Thing", at: "Thing.app/Contents/Current")
+        try await roundTrip(fixture, "/Thing.app")
+    }
+
+    @Test("A collapsed folder comes back with its size")
+    func collapsedFolderComesBackWithItsSize() async throws {
+        let fixture = try Fixture()
+        try fixture.file("p/node_modules/a/index.js", bytes: 1_500)
+        try fixture.file("p/node_modules/b/lib/main.js", bytes: 22_000)
+        try fixture.hardLink("p/node_modules/a/index.js", to: "p/node_modules/b/copy.js")
+        try await roundTrip(fixture, "/p/node_modules")
+    }
+
+    @Test("An extra hard link comes back at zero, as the scan stored it")
+    func hardLinkDuplicateComesBackAtZero() async throws {
+        let fixture = try Fixture()
+        try fixture.file("one.bin", bytes: 8_000)
+        try fixture.hardLink("one.bin", to: "two.bin")
+        let store = await ScanEngine.scan(root: fixture.path).store
+        let duplicate = try #require(store.children(of: 0).first {
+            store.flags[Int($0)].contains(.hardlinkDuplicate)
+        })
+        try await roundTrip(fixture, "/" + store.name(of: duplicate))
+    }
+
+    @Test("A folder measured without its contents is not guessed at")
+    func contentsAreNeededWhereTheTreeHasNone() async throws {
+        let fixture = try Fixture()
+        try fixture.file("Thing.app/Contents/Info.plist", bytes: 700)
+        var store = await ScanEngine.scan(root: fixture.path).store
+        let root = store.name(of: 0)
+        let node = try #require(store.node(atPath: root + "/Thing.app"))
+        #expect(store.needsContentsToReinstate(node))
+        store.markDeleted(node)
+        let measured = try #require(
+            NodeStore.remeasure(root + "/Thing.app", withContents: false)
+        )
+        #expect(store.reinstatedSizes(of: node, from: measured) == nil)
     }
 
     @Test("A path that is gone has no size")
@@ -209,10 +270,9 @@ struct ReinstatedSizesTests {
         let fixture = try fixture()
         let store = await ScanEngine.scan(root: fixture.path).store
         let root = store.name(of: 0)
-        let node = try #require(store.node(atPath: root + "/x/one.bin"))
         try FileManager.default.removeItem(
             at: fixture.root.appendingPathComponent("x/one.bin")
         )
-        #expect(store.reinstatedSizes(of: node, at: root + "/x/one.bin") == nil)
+        #expect(NodeStore.remeasure(root + "/x/one.bin", withContents: true) == nil)
     }
 }

@@ -1641,22 +1641,16 @@ final class ScanModel {
                     node, alloc: sizes.alloc,
                     logical: sizes.logical, files: sizes.files
                 )
-                // `reinstate` skips these nodes below, so it would not mark
-                // the tree changed on their account.
+                // No longer `.deleted`, so `reinstate` below passes them by
+                // and would not mark the tree changed on their account.
                 if let root = treeRootPath { unsavedRoots.insert(root) }
             }
         }
         // The on-screen tree went back with its exact sizes above; the same
         // paths may live in the cached trees, which have no such record.
-        reinstate(
+        await reinstate(
             items.filter { !failedPaths.contains($0.originalPath) }
-                .map(\.originalPath),
-            skipping: Set(items.compactMap { item in
-                guard !failedPaths.contains(item.originalPath),
-                      let node = item.node, undoSizes[node] != nil
-                else { return nil }
-                return node
-            })
+                .map(\.originalPath)
         )
         lastDeletion = nil
         undoSizes = [:]
@@ -1717,23 +1711,61 @@ final class ScanModel {
         }
     }
 
-    /// Brings put-back items back into every tree in memory, measuring each
-    /// from disk. `skipping` holds the on-screen nodes the banner's undo has
-    /// already reinstated: that path keeps its exact recorded sizes instead of
-    /// a re-measurement.
-    private func reinstate(_ paths: [String], skipping handled: Set<Int32>) {
+    /// Brings put-back items back into every tree in memory that still holds
+    /// them as deleted, measuring each from disk.
+    ///
+    /// The measuring is disk work — a package or a collapsed folder has to be
+    /// walked whole, and Xcode.app is a few hundred thousand files — so it runs
+    /// once per path, off the main actor, and only the arithmetic on the trees
+    /// comes back here. A folder is walked only where some tree has no
+    /// children to add up for it; the saved trees still being read are not
+    /// known yet, so while they load every folder is walked for them.
+    ///
+    /// The banner's undo reinstates the on-screen nodes first, with their exact
+    /// recorded sizes. Those are no longer `.deleted` when this runs, so they
+    /// are left alone here without being named.
+    private func reinstate(_ paths: [String]) async {
+        guard !paths.isEmpty else { return }
+        let unknownTrees = isLoadingSavedScans || !hasLoadedSavedScans
+        let walked = Set(paths.filter { unknownTrees || needsContents($0) })
+        let options = Preferences.shared.scanOptions()
+        let measured = await Task.detached(priority: .userInitiated) {
+            paths.map { path in
+                (path: path, size: NodeStore.remeasure(
+                    path, withContents: walked.contains(path), options: options))
+            }
+        }.value
+        applyReinstated(measured)
+    }
+
+    /// True when a tree in memory holds `path` as deleted and has no children
+    /// under it to rebuild its size from.
+    private func needsContents(_ path: String) -> Bool {
+        func needs(_ store: NodeStore) -> Bool {
+            guard let node = store.node(atPath: path) else { return false }
+            return store.flags[Int(node)].contains(.deleted)
+                && store.needsContentsToReinstate(node)
+        }
+        if let result, needs(result.store) { return true }
+        return cache.contains { needs($0.scan.result.store) }
+    }
+
+    /// The main-actor half of `reinstate`. By path, in every tree: the trees in
+    /// memory may have changed while the measuring ran.
+    ///
+    /// Reads each store through its property every time instead of binding it
+    /// to a local, as `replay` does: a local copy alive across `unmarkDeleted`
+    /// would make every put-back duplicate the whole store.
+    private func applyReinstated(_ measured: [(path: String, size: NodeStore.Remeasured?)]) {
         defer { scheduleSave() }
-        // All of `paths`, skipped ones included: the saved trees still loading
-        // hold none of the exact sizes the skip is about.
-        if isLoadingSavedScans { editsDuringLoad.append(.reinstated(paths)) }
+        if isLoadingSavedScans { editsDuringLoad.append(.reinstated(measured)) }
         if result != nil {
             var touched = false
-            for path in paths {
-                guard let store = result?.store,
-                      let node = store.node(atPath: path),
-                      !handled.contains(node),
-                      store.flags[Int(node)].contains(.deleted),
-                      let sizes = store.reinstatedSizes(of: node, at: path)
+            for (path, size) in measured {
+                guard let size,
+                      let node = result?.store.node(atPath: path),
+                      result?.store.flags[Int(node)].contains(.deleted) == true,
+                      let sizes = result?.store.reinstatedSizes(of: node, from: size)
                 else { continue }
                 result?.store.unmarkDeleted(
                     node, alloc: sizes.alloc,
@@ -1745,11 +1777,12 @@ final class ScanModel {
         }
         for index in cache.indices {
             var touched = false
-            for path in paths {
-                let store = cache[index].scan.result.store
-                guard let node = store.node(atPath: path),
-                      store.flags[Int(node)].contains(.deleted),
-                      let sizes = store.reinstatedSizes(of: node, at: path)
+            for (path, size) in measured {
+                guard let size,
+                      let node = cache[index].scan.result.store.node(atPath: path),
+                      cache[index].scan.result.store.flags[Int(node)].contains(.deleted),
+                      let sizes = cache[index].scan.result.store
+                          .reinstatedSizes(of: node, from: size)
                 else { continue }
                 cache[index].scan.result.store.unmarkDeleted(
                     node, alloc: sizes.alloc,
@@ -1819,7 +1852,9 @@ final class ScanModel {
     /// being read, kept by path so it can be replayed on them once they arrive.
     private enum TreeEdit {
         case trashed([String])
-        case reinstated([String])
+        /// With the sizes measured for the trees in memory, so a replay does
+        /// no disk work on the main actor.
+        case reinstated([(path: String, size: NodeStore.Remeasured?)])
     }
 
     private var hasLoadedSavedScans = false
@@ -1944,11 +1979,12 @@ final class ScanModel {
                     result.store.markDeleted(node)
                     touched = true
                 }
-            case .reinstated(let paths):
-                for path in paths {
-                    guard let node = result.store.node(atPath: path),
+            case .reinstated(let measured):
+                for (path, size) in measured {
+                    guard let size,
+                          let node = result.store.node(atPath: path),
                           result.store.flags[Int(node)].contains(.deleted),
-                          let sizes = result.store.reinstatedSizes(of: node, at: path)
+                          let sizes = result.store.reinstatedSizes(of: node, from: size)
                     else { continue }
                     result.store.unmarkDeleted(
                         node, alloc: sizes.alloc,
@@ -2089,10 +2125,9 @@ final class ScanModel {
         // leaving an entry that will fail the same way for ever.
         await refreshRestorable()
 
-        reinstate(
+        await reinstate(
             entries.filter { !failedPaths.contains($0.originalPath) }
-                .map(\.originalPath),
-            skipping: []
+                .map(\.originalPath)
         )
 
         let restored = entries.count - failures.count

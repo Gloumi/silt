@@ -451,33 +451,95 @@ public struct NodeStore: Sendable {
 
 extension NodeStore {
 
-    /// Sizes to give back to a node marked `.deleted` that has returned to
-    /// disk at `path`, without remembering what it weighed before.
+    /// What a path that came back from the Trash weighs now, read from disk.
     ///
-    /// `markDeleted` zeroes only the node it is handed, so the children of a
-    /// walked folder still carry their totals and are summed here. A child that
-    /// was trashed earlier is already at zero, and asking `isEffectivelyDeleted`
-    /// would be wrong anyway: the folder's own flag is still set. The folder
-    /// itself counts as the scan engine counts it: its own blocks for both alloc
-    /// and logical (the directory attributes carry no separate length), no file.
-    /// Anything the scan never descended into has no children to add up, so
-    /// it is measured whole. Nil when nothing exists at `path` any more.
-    public func reinstatedSizes(of node: Int32, at path: String)
-        -> (alloc: Int64, logical: Int64, files: Int32)?
-    {
+    /// Kept apart from the tree it is applied to for two reasons. Measuring is
+    /// disk work — a package or a collapsed folder is walked whole — and must
+    /// run off the main actor, while the trees live on it. And the same path
+    /// may sit in several trees in memory, which should not each walk it.
+    public struct Remeasured: Sendable {
+        /// Everything below a folder, summed as the scanner sums a folder it
+        /// does not descend into.
+        public struct Contents: Sendable, Equatable {
+            public var alloc: Int64
+            public var logical: Int64
+            public var files: Int32
+        }
+
+        public var isFolder: Bool
+        /// A file's two sizes; a folder's own blocks, for both.
+        public var alloc: Int64
+        public var logical: Int64
+        /// Nil for a file, and for a folder measured without them.
+        public var contents: Contents?
+    }
+
+    /// Reads `path` from disk. Nil when nothing is there any more.
+    ///
+    /// A file is read with the attributes the scanner records
+    /// (`ATTR_FILE_TOTALSIZE` / `ATTR_FILE_ALLOCSIZE`), not `lstat`, whose
+    /// `st_size` leaves out the resource fork. A folder's contents are only
+    /// walked when `withContents` says some tree needs them — see
+    /// `needsContentsToReinstate` — since a walked folder's children already
+    /// carry their totals and walking a big one would be wasted time.
+    public static func remeasure(
+        _ path: String, withContents: Bool, options: ScanOptions = ScanOptions()
+    ) -> Remeasured? {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
-
-        let own = (alloc: Int64(info.st_blocks) * 512, logical: Int64(info.st_size))
         guard info.st_mode & S_IFMT == S_IFDIR else {
-            return (own.alloc, own.logical, 1)
+            let sizes = DiskCheck.sizes(of: path, fallback: info)
+            return Remeasured(isFolder: false, alloc: sizes.alloc, logical: sizes.total)
         }
-        guard isDirectory(node), !flags[Int(node)].contains(.notDescended) else {
-            let measured = PathSize.measure(path)
-            return (measured.allocated, measured.allocated, measured.files)
+        // The directory attributes carry no separate length: the scanner
+        // counts a folder's own blocks for both.
+        let own = Int64(info.st_blocks) * 512
+        var measured = Remeasured(isFolder: true, alloc: own, logical: own)
+        if withContents {
+            let sum = ScanEngine.contentsTotals(of: path, device: info.st_dev, options: options)
+            measured.contents = .init(alloc: sum.alloc, logical: sum.logical, files: sum.files)
+        }
+        return measured
+    }
+
+    /// True when bringing `node` back as a folder takes a walk of its
+    /// contents: the scan gave it no children to add up — a package, a
+    /// collapsed folder, another volume — or it was not a folder at all.
+    public func needsContentsToReinstate(_ node: Int32) -> Bool {
+        !isDirectory(node) || flags[Int(node)].contains(.notDescended)
+    }
+
+    /// Sizes to give back to a node marked `.deleted` that has returned to
+    /// disk, without remembering what it weighed before. Pure arithmetic on
+    /// the tree and a measurement taken beforehand.
+    ///
+    /// An extra hard link comes back at zero, as the scan stored it: another
+    /// link to the same inode still pays for the bytes. `markDeleted` zeroes
+    /// only the node it is handed, so the children of a walked folder still
+    /// carry their totals and are summed here. A child that was trashed
+    /// earlier is already at zero, and asking `isEffectivelyDeleted` would be
+    /// wrong anyway: the folder's own flag is still set. The folder itself
+    /// counts as the scan engine counts it: its own blocks for both alloc and
+    /// logical, no file. Anything the scan never descended into has no
+    /// children to add up, so it takes the measured contents — and is nil if
+    /// they were not measured, rather than a guess.
+    public func reinstatedSizes(of node: Int32, from measured: Remeasured)
+        -> (alloc: Int64, logical: Int64, files: Int32)?
+    {
+        guard measured.isFolder else {
+            if flags[Int(node)].contains(.hardlinkDuplicate) { return (0, 0, 1) }
+            return (measured.alloc, measured.logical, 1)
+        }
+        guard !needsContentsToReinstate(node) else {
+            guard let contents = measured.contents else { return nil }
+            return (
+                measured.alloc + contents.alloc,
+                measured.logical + contents.logical,
+                contents.files
+            )
         }
 
-        var alloc = own.alloc, logical = own.alloc, files: Int32 = 0
+        var alloc = measured.alloc, logical = measured.logical, files: Int32 = 0
         for child in children(of: node) {
             alloc += totalAlloc[Int(child)]
             logical += totalLogical[Int(child)]

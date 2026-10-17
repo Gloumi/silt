@@ -489,6 +489,20 @@ public enum ScanEngine {
         return result
     }
 
+    /// Sums everything below `path` exactly as a package or a collapsed folder
+    /// is summed during a scan, for one that comes back from the Trash into a
+    /// tree holding no nodes under it. Anything else — `PathSize`, say — skips
+    /// symlinks and counts no logical size, so the folder would come back at
+    /// a figure the scan never gave it. `device` is the folder's own.
+    static func contentsTotals(
+        of path: String, device: Int32, options: ScanOptions
+    ) -> (alloc: Int64, logical: Int64, files: Int32) {
+        let sum = aggregateSubtree(
+            path: path, worker: Worker(), options: options, parentDev: device
+        )
+        return (sum.alloc, sum.logical, sum.files)
+    }
+
     // MARK: - Helpers
 
     private static func join(_ directory: String, _ name: String) -> String {
