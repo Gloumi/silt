@@ -2022,11 +2022,13 @@ final class ScanModel {
         var folderCandidates: [(display: DuplicateGroupDisplay, folders: [Int32])] = []
         for group in duplicates.folderGroups {
             let live = group.folders.filter {
-                !store.isEffectivelyDeleted($0)
-                    && (searchMask?.keeps($0) ?? true)
-                    && isOfferable($0, in: store)
+                !store.isEffectivelyDeleted($0) && isOfferable($0, in: store)
             }
             guard live.count >= 2 else { continue }
+            // A search picks groups, not copies: see the file groups below.
+            if let searchMask, !live.contains(where: searchMask.keeps) {
+                continue
+            }
             // A clone takes the identity of its block set, so two cloned
             // folders count as one copy and « Conservée » keeps both.
             let copies = Self.grouped(live.map { node in
@@ -2099,7 +2101,6 @@ final class ScanModel {
                 var kept = storage
                 kept.nodes = storage.nodes.filter { node in
                     !store.isEffectivelyDeleted(node)
-                        && (searchMask?.keeps(node) ?? true)
                         && !FolderCoverage.hasAncestor(
                             of: node, in: absorbed, store: store
                         )
@@ -2110,6 +2111,16 @@ final class ScanModel {
             // A group entirely covered by a folder group falls below two
             // members and disappears through the guard that was already here.
             guard storages.count >= 2 else { continue }
+            // A search picks groups, not copies. Identical bytes need not
+            // share a name: a video saved as `.mp4` from a messaging export
+            // and kept as `.MOV` in an archive is one group, and filtering
+            // copy by copy left the `.mp4` alone — one copy, no group, and
+            // nothing listed for a query that plainly matches. The copies
+            // that do not match are the very ones the decision is about.
+            if let searchMask,
+               !storages.contains(where: { $0.nodes.contains(where: searchMask.keeps) }) {
+                continue
+            }
 
             var copies: [DuplicateCopy] = []
             var freeable: [CopyIdentity: Int64] = [:]
