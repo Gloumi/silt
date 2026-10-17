@@ -82,10 +82,24 @@ private struct BridgedSearchField: NSViewRepresentable {
     let onDismiss: () -> Void
 
     func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField(string: initialText)
+        // Not `NSSearchField(string:)`: that initializer sizes the field to
+        // its text, and the cell keeps laying out for that first height
+        // whatever frame it gets afterwards — glass, text, cancel button and
+        // bezel all drawn 3 pt above the frame, the focus ring overshooting
+        // the top. Built from a frame, it lays out for the one it is given.
+        let field = NSSearchField(frame: .zero)
+        field.stringValue = initialText
         field.delegate = context.coordinator
         field.placeholderString = "Nom, ou .extension"
-        field.font = .systemFont(ofSize: 12)
+        // The toolbar gives the field the height of its neighbours — 36 pt on
+        // macOS 26, the extra-large size. Sized to match, its glass, text and
+        // cancel button are drawn at the scale of the buttons beside it.
+        if #available(macOS 26, *) {
+            field.controlSize = .extraLarge
+        }
+        field.font = .systemFont(
+            ofSize: NSFont.systemFontSize(for: field.controlSize)
+        )
         context.coordinator.field = field
         context.coordinator.installClickMonitor()
         // Grab the caret as soon as the field exists: it only ever appears
