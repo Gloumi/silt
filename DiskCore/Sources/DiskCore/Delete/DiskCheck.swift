@@ -33,10 +33,45 @@ public enum DiskCheck {
         guard !isDirectory else { return .unchanged }
 
         let date = Int32(clamping: info.st_mtimespec.tv_sec)
-        let sizeDiffers = logical.map { Int64(info.st_size) != $0 } ?? false
+        let (total, alloc) = sizes(of: path, fallback: info)
+        let sizeDiffers = logical.map { total != $0 } ?? false
         if sizeDiffers || date != modified {
-            return .changed(alloc: Int64(info.st_blocks) * 512)
+            return .changed(alloc: alloc)
         }
         return .unchanged
+    }
+
+    /// The two sizes the scanner stores, read the way it reads them.
+    ///
+    /// `st_size` is the data fork only (the uncompressed size for an
+    /// HFS-compressed file), whereas the scan records `ATTR_FILE_TOTALSIZE`
+    /// and `ATTR_FILE_ALLOCSIZE`. Comparing the two would flag every file with
+    /// a resource fork as modified.
+    private static func sizes(of path: String, fallback: stat) -> (total: Int64, alloc: Int64) {
+        var list = attrlist()
+        list.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        list.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS)
+        list.fileattr = attrgroup_t(ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE)
+        // Length, returned-attributes set, then the two sizes.
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let status = buffer.withUnsafeMutableBytes {
+            getattrlist(path, &list, $0.baseAddress, $0.count, UInt32(FSOPT_NOFOLLOW))
+        }
+        let setSize = MemoryLayout<attribute_set_t>.size
+        let expected = MemoryLayout<UInt32>.size + setSize + 16
+        let returned = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: attribute_set_t.self) }
+        guard status == 0,
+              returned.fileattr & attrgroup_t(ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE)
+                  == attrgroup_t(ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE),
+              buffer.count >= expected
+        else {
+            return (Int64(fallback.st_size), Int64(fallback.st_blocks) * 512)
+        }
+        return buffer.withUnsafeBytes {
+            (
+                $0.loadUnaligned(fromByteOffset: 4 + setSize, as: Int64.self),
+                $0.loadUnaligned(fromByteOffset: 12 + setSize, as: Int64.self)
+            )
+        }
     }
 }

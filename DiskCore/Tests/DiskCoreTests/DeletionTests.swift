@@ -626,4 +626,31 @@ struct DiskCheckTests {
         )
         #expect(v == .unchanged)
     }
+
+    @Test("A transparently compressed file is unchanged")
+    func compressedFile() async throws {
+        let fixture = try Fixture()
+        let source = try fixture.directory("src").appendingPathComponent("c.txt")
+        try Data(repeating: 0x61, count: 200_000).write(to: source)
+        let destination = fixture.root.appendingPathComponent("c.txt")
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["--hfsCompress", source.path, destination.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+        #expect(ditto.terminationStatus == 0)
+        let s = try await scanned(fixture, "c.txt")
+        #expect(verdict(s) == .unchanged)
+    }
+
+    @Test("A file with a resource fork is unchanged")
+    func resourceForkFile() async throws {
+        let fixture = try Fixture()
+        let url = try fixture.file("r.bin", bytes: 5_000)
+        try Data(count: 3_000).write(
+            to: URL(fileURLWithPath: url.path + "/..namedfork/rsrc")
+        )
+        let s = try await scanned(fixture, "r.bin")
+        #expect(verdict(s) == .unchanged)
+    }
 }
