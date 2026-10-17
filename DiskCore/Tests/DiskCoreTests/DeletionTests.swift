@@ -514,3 +514,116 @@ struct FinderTrashTests {
         #expect(FinderTrash.parse("", count: 1) == [nil])
     }
 }
+
+@Suite("Disk check")
+struct DiskCheckTests {
+
+    /// Scans a fixture and returns what the tree would hand to the check for
+    /// the named child of the root.
+    private func scanned(
+        _ fixture: borrowing Fixture, _ name: String
+    ) async throws -> (path: String, isDirectory: Bool, logical: Int64, modified: Int32) {
+        let result = await ScanEngine.scan(root: fixture.path)
+        let store = result.store
+        let node = try #require(
+            store.children(of: 0).first { store.name(of: $0) == name }
+        )
+        return (
+            store.path(of: node), store.isDirectory(node),
+            store.totalLogical[Int(node)], store.modTime[Int(node)]
+        )
+    }
+
+    private func verdict(
+        _ s: (path: String, isDirectory: Bool, logical: Int64, modified: Int32)
+    ) -> DiskCheck.Verdict {
+        DiskCheck.verdict(
+            path: s.path, isDirectory: s.isDirectory,
+            logical: s.logical, modified: s.modified
+        )
+    }
+
+    @Test("A file nobody touched is unchanged")
+    func unchangedFile() async throws {
+        let fixture = try Fixture()
+        try fixture.file("f.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "f.bin")
+        #expect(verdict(s) == .unchanged)
+    }
+
+    @Test("A file rewritten at another size is changed, with its new allocation")
+    func rewrittenFile() async throws {
+        let fixture = try Fixture()
+        try fixture.file("f.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "f.bin")
+        try Data(count: 9_000).write(to: URL(fileURLWithPath: s.path))
+        guard case .changed(let alloc) = verdict(s) else {
+            Issue.record("expected .changed")
+            return
+        }
+        #expect(alloc > 0)
+    }
+
+    @Test("A file with the same size but another date is changed")
+    func touchedFile() async throws {
+        let fixture = try Fixture()
+        try fixture.file("f.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "f.bin")
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixture.created.addingTimeInterval(-3_600)],
+            ofItemAtPath: s.path
+        )
+        guard case .changed = verdict(s) else {
+            Issue.record("expected .changed")
+            return
+        }
+    }
+
+    @Test("A file that is gone is missing")
+    func missingFile() async throws {
+        let fixture = try Fixture()
+        try fixture.file("f.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "f.bin")
+        try FileManager.default.removeItem(atPath: s.path)
+        #expect(verdict(s) == .missing)
+    }
+
+    @Test("A file replaced by a folder of the same name is missing")
+    func fileBecameFolder() async throws {
+        let fixture = try Fixture()
+        try fixture.file("f.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "f.bin")
+        try FileManager.default.removeItem(atPath: s.path)
+        try FileManager.default.createDirectory(
+            atPath: s.path, withIntermediateDirectories: false
+        )
+        #expect(verdict(s) == .missing)
+    }
+
+    @Test("A folder is not compared on size or date")
+    func folderIgnoresSizes() async throws {
+        let fixture = try Fixture()
+        try fixture.file("d/a.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "d")
+        try Data(count: 7_000).write(to: URL(fileURLWithPath: s.path + "/b.bin"))
+        #expect(verdict(s) == .unchanged)
+    }
+
+    @Test("A nil logical size skips the size comparison")
+    func nilLogicalSkipsSize() async throws {
+        let fixture = try Fixture()
+        try fixture.file("f.bin", bytes: 5_000)
+        let s = try await scanned(fixture, "f.bin")
+        let url = URL(fileURLWithPath: s.path)
+        try Data(count: 9_000).write(to: url)
+        // Put the date back so only the size differs.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: TimeInterval(s.modified))],
+            ofItemAtPath: s.path
+        )
+        let v = DiskCheck.verdict(
+            path: s.path, isDirectory: false, logical: nil, modified: s.modified
+        )
+        #expect(v == .unchanged)
+    }
+}

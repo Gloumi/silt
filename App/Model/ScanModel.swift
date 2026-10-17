@@ -1408,15 +1408,34 @@ final class ScanModel {
             if case .caution(let reason) = verdict {
                 plan.cautions.append("\(name) — \(reason)")
             }
+            // The tree may be days old: make sure the path still names what
+            // was measured. Extra hard links are stored as 0 bytes, so their
+            // size cannot be compared — only their date.
+            var bytes = store.totalAlloc[Int(node)]
+            let isDuplicateLink = store.flags[Int(node)].contains(.hardlinkDuplicate)
+            switch DiskCheck.verdict(
+                path: path,
+                isDirectory: store.isDirectory(node),
+                logical: isDuplicateLink ? nil : store.totalLogical[Int(node)],
+                modified: store.modTime[Int(node)]
+            ) {
+            case .missing:
+                // Not enqueued, so it does not claim its subtree either.
+                plan.refused.append("\(name) — n'existe plus sur le disque")
+                continue
+            case .changed(let alloc):
+                plan.cautions.append("\(name) — modifié depuis l'analyse")
+                bytes = alloc
+            case .unchanged:
+                break
+            }
             // Only what is actually enqueued claims its subtree: a folder the
             // deny list refused is staying put, so the file inside it is still
             // the user's to delete.
             claimed.insert(node)
-            plan.requests.append(
-                .init(node: node, path: path, bytes: store.totalAlloc[Int(node)])
-            )
+            plan.requests.append(.init(node: node, path: path, bytes: bytes))
             plan.names.append(name)
-            plan.totalBytes += store.totalAlloc[Int(node)]
+            plan.totalBytes += bytes
         }
 
         guard !plan.requests.isEmpty || !plan.refused.isEmpty else { return }
