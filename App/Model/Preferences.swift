@@ -376,7 +376,12 @@ final class Preferences {
         largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
             .flatMap(AgeFilter.init(rawValue:)) ?? .all
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
-        scanMaxAgeDays = defaults.integer(forKey: Key.scanMaxAgeDays)
+        // Only a rung of the menu. Anything else — a hand-edited default, a
+        // choice since removed — is not something the user picked: a 0 would
+        // throw every analysis away on sight, and the picker could not show it.
+        let storedMaxAge = defaults.integer(forKey: Key.scanMaxAgeDays)
+        scanMaxAgeDays = Self.scanMaxAgeChoices.contains(storedMaxAge)
+            ? storedMaxAge : Self.defaultScanMaxAgeDays
         expiredScans = defaults.dictionary(forKey: Key.expiredScans)
             as? [String: Date] ?? [:]
         lastLocation = defaults.stringArray(forKey: Key.lastLocation)
