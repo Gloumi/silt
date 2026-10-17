@@ -321,8 +321,28 @@ final class ScanModel {
     /// trashed copies are hidden at display time instead of rehashing the
     /// survivors.
     private(set) var duplicates: DuplicateFinder.Result? {
-        didSet { duplicatesResultVersion += 1 }
+        didSet {
+            duplicatesResultVersion += 1
+            offerableByNode = [:]
+            cardByNode = [:]
+        }
     }
+
+    /// `isOfferable` by node, for the result above.
+    ///
+    /// The verdict hangs on the path alone, and a path does not move while the
+    /// result stands — but asking means building the path and splitting it
+    /// against the deny list, for every copy of every group, hidden ones
+    /// included. Recomputed on each rebuild, that was two seconds of frozen
+    /// window per search keystroke and per click on the field's ✕.
+    @ObservationIgnored private var offerableByNode: [Int32: Bool] = [:]
+
+    /// Cards already drawn for the result above, by node, and the folder they
+    /// were drawn from — the one part of a card that is not the node's own
+    /// (`relativeFolder` reads from it). Same reason as the verdicts: paths,
+    /// names and the managed-storage test, for every copy, on every keystroke.
+    @ObservationIgnored private var cardByNode: [Int32: DuplicateCopy] = [:]
+    @ObservationIgnored private var cardsFolder: String?
     private(set) var duplicatesPhase: DuplicatesPhase = .idle
     private(set) var duplicatesProgress: DuplicateFinder.Progress?
     private var duplicatesTask: Task<Void, Never>?
@@ -1957,11 +1977,18 @@ final class ScanModel {
         let currentPath = store.path(of: currentNode)
         let prefix = currentPath.hasSuffix("/") ? currentPath : currentPath + "/"
         var hidden = 0
+        if cardsFolder != currentPath {
+            cardByNode = [:]
+            cardsFolder = currentPath
+        }
 
+        // Everything passed in is fixed for a node within one result, which
+        // is what lets the cache answer by node alone.
         func card(
             _ node: Int32, identity: CopyIdentity,
             isHardlinked: Bool, isClone: Bool
         ) -> DuplicateCopy {
+            if let known = cardByNode[node] { return known }
             let path = store.path(of: node)
             let parent = store.path(of: store.parent[Int(node)])
             let relative: String? = parent == currentPath
@@ -1973,7 +2000,7 @@ final class ScanModel {
             let managed = Self.managedOwner(
                 of: path, relativeFolder: relative, name: name
             )
-            return DuplicateCopy(
+            let copy = DuplicateCopy(
                 id: node,
                 identity: identity,
                 isDirectory: store.isDirectory(node),
@@ -1987,6 +2014,8 @@ final class ScanModel {
                 isManaged: managed.isManaged,
                 managedBy: managed.owner
             )
+            cardByNode[node] = copy
+            return copy
         }
 
         // ---- Folder groups.
@@ -1995,7 +2024,7 @@ final class ScanModel {
             let live = group.folders.filter {
                 !store.isEffectivelyDeleted($0)
                     && (searchMask?.keeps($0) ?? true)
-                    && Self.isOfferable(store.path(of: $0))
+                    && isOfferable($0, in: store)
             }
             guard live.count >= 2 else { continue }
             // A clone takes the identity of its block set, so two cloned
@@ -2074,7 +2103,7 @@ final class ScanModel {
                         && !FolderCoverage.hasAncestor(
                             of: node, in: absorbed, store: store
                         )
-                        && Self.isOfferable(store.path(of: node))
+                        && isOfferable(node, in: store)
                 }
                 if !kept.nodes.isEmpty { storages.append(kept) }
             }
@@ -2177,6 +2206,13 @@ final class ScanModel {
     private static func isOfferable(_ path: String) -> Bool {
         if case .forbidden = DenyList.verdict(for: path) { return false }
         return true
+    }
+
+    private func isOfferable(_ node: Int32, in store: NodeStore) -> Bool {
+        if let known = offerableByNode[node] { return known }
+        let verdict = Self.isOfferable(store.path(of: node))
+        offerableByNode[node] = verdict
+        return verdict
     }
 
     /// Cards of one copy, side by side.
