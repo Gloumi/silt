@@ -120,6 +120,8 @@ final class Preferences {
         static let duplicateFolderThreshold = "duplicateFolderSizeThreshold"
         static let checksForUpdates = "checksForUpdates"
         static let lastLocation = "lastLocation"
+        static let scanMaxAgeDays = "scanMaxAgeDays"
+        static let expiredScans = "expiredScans"
     }
 
     /// Both thresholds are plain byte counts, which is what the three-way menus
@@ -300,6 +302,37 @@ final class Preferences {
         didSet { UserDefaults.standard.set(checksForUpdates, forKey: Key.checksForUpdates) }
     }
 
+    /// Days of age past which an analysis is no longer shown.
+    static let scanMaxAgeChoices = [1, 3, 7, 14, 30]
+    static let defaultScanMaxAgeDays = 7
+
+    /// Figures this old would mislead more than they inform, so the location
+    /// goes back to "Prêt à analyser" instead of displaying them.
+    var scanMaxAgeDays: Int {
+        didSet { UserDefaults.standard.set(scanMaxAgeDays, forKey: Key.scanMaxAgeDays) }
+    }
+
+    /// Roots whose analysis was dropped for age, and the date it carried.
+    ///
+    /// Lets the empty screen say why a location it once knew is blank again,
+    /// rather than looking like the analysis never existed. State, not a
+    /// setting: `resetToDefaults` leaves it alone. Cleared per root by the
+    /// next successful scan.
+    private(set) var expiredScans: [String: Date] {
+        didSet { UserDefaults.standard.set(expiredScans, forKey: Key.expiredScans) }
+    }
+
+    func noteExpired(root: String, scannedAt: Date) {
+        // Keep the freshest date if two copies of a root expired.
+        if let known = expiredScans[root], known >= scannedAt { return }
+        expiredScans[root] = scannedAt
+    }
+
+    func forgetExpired(root: String) {
+        guard expiredScans[root] != nil else { return }
+        expiredScans.removeValue(forKey: root)
+    }
+
     /// Where the sidebar pointed when the app was last used, and what its row
     /// called it. Saved scans bring the tree back at launch; this brings back
     /// the place, so the window reopens on what the user was looking at rather
@@ -320,6 +353,7 @@ final class Preferences {
         defaults.register(defaults: [
             Key.collapseDependencies: true,
             Key.checksForUpdates: true,
+            Key.scanMaxAgeDays: Self.defaultScanMaxAgeDays,
         ])
         useLogicalSize = defaults.bool(forKey: Key.logicalSize)
         descendIntoPackages = defaults.bool(forKey: Key.descendPackages)
@@ -342,6 +376,9 @@ final class Preferences {
         largeFilesAgeFilter = defaults.string(forKey: Key.largeFilesAge)
             .flatMap(AgeFilter.init(rawValue:)) ?? .all
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
+        scanMaxAgeDays = defaults.integer(forKey: Key.scanMaxAgeDays)
+        expiredScans = defaults.dictionary(forKey: Key.expiredScans)
+            as? [String: Date] ?? [:]
         lastLocation = defaults.stringArray(forKey: Key.lastLocation)
             .flatMap { $0.count == 2 ? (path: $0[0], name: $0[1]) : nil }
         let storedFile = Int64(defaults.integer(forKey: Key.duplicateThreshold))
@@ -371,7 +408,8 @@ final class Preferences {
     /// already has a way to remove them one at a time. `hasSeenWelcome` and
     /// `lastUsedPresentation` are app state rather than settings — clearing
     /// the first would replay the welcome sheet at the next launch. So is
-    /// `lastLocation`: it records where the user was, not how the app behaves.
+    /// `lastLocation` and `expiredScans`: they record where the user was and
+    /// what aged out, not how the app behaves.
     func resetToDefaults() {
         useLogicalSize = false
         descendIntoPackages = false
@@ -384,6 +422,7 @@ final class Preferences {
         duplicateFolderThresholdBytes = Self.defaultDuplicateFolderThreshold
         recentSearches = []
         checksForUpdates = true
+        scanMaxAgeDays = Self.defaultScanMaxAgeDays
     }
 
     /// Scan options matching the current preferences.

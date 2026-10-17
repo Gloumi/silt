@@ -20,6 +20,16 @@ struct ScanSettings: View {
             }
 
             Section {
+                Picker("Ne plus afficher une analyse après",
+                       selection: $preferences.scanMaxAgeDays) {
+                    ForEach(Preferences.scanMaxAgeChoices, id: \.self) { days in
+                        Text(days == 1 ? "1 jour" : "\(days) jours").tag(days)
+                    }
+                }
+                SettingHelp("Au-delà, l'emplacement repasse en « Prêt à analyser » : des chiffres trop anciens induiraient en erreur.")
+            }
+
+            Section {
                 Toggle("Replier les dossiers de dépendances",
                        isOn: $preferences.collapseDependencies)
                 SettingHelp("Ces dossiers gardent leur taille exacte mais ne sont pas indexés fichier par fichier. Sur un dossier de développement, cela divise par deux le nombre d'éléments.")

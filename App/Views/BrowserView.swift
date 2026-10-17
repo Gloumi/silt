@@ -387,6 +387,11 @@ private struct StatusBar: View {
                     Text("avec « \(origin) »")
                         .help("Ce dossier vient de l'analyse de « \(origin) ». Actualisez pour l'analyser seul.")
                 }
+                if model.isOld {
+                    Text("ancienne")
+                        .foregroundStyle(.orange)
+                        .help("Cette analyse a plus d'un jour : les chiffres ont pu changer. Actualisez pour les mettre à jour.")
+                }
             }
             Spacer()
             if !model.unreadablePaths.isEmpty {
@@ -432,6 +437,13 @@ private struct EmptyStateView: View {
                 Text("Silt va parcourir \(target) et vous montrer où part la place.")
             } else {
                 Text("Choisissez un volume ou un emplacement dans la barre latérale.")
+            }
+            if let expired = model.expiredAnalysis {
+                if let parent = expired.parentName {
+                    Text("La dernière analyse de « \(parent) », \(Format.age(since: expired.date)), est trop ancienne pour être affichée.")
+                } else {
+                    Text("Dernière analyse \(Format.age(since: expired.date)), trop ancienne pour être affichée.")
+                }
             }
         } actions: {
             if model.selectedRoot != nil {

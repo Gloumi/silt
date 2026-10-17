@@ -935,6 +935,7 @@ final class ScanModel {
             Preferences.shared.lastLocation = (path, name)
         }
 
+        purgeExpiredCache()
         if !force, rootPath == path, isScanning || result != nil { return }
 
         if !force, let found = tree(holding: path) {
@@ -1002,6 +1003,7 @@ final class ScanModel {
                 result = scanned
                 partialStore = nil
                 scannedAt = Date()
+                Preferences.shared.forgetExpired(root: path)
                 phase = .loaded
                 // Only a finished walk is worth keeping across launches; a
                 // forced rescan replaces its root's file here too.
@@ -1038,8 +1040,47 @@ final class ScanModel {
         // mode the resolved default *is* the view in use, so it carries over.
         presentation = Preferences.shared.presentation(for: path)
             ?? Preferences.shared.resolvedDefaultView
+        purgeExpiredCache()
         guard path != rootPath, let found = tree(holding: path) else { return }
         show(found, at: path)
+    }
+
+    /// True once an analysis is older than the limit the user set.
+    func isExpired(_ date: Date) -> Bool {
+        Date().timeIntervalSince(date) > Double(Preferences.shared.scanMaxAgeDays) * 86_400
+    }
+
+    /// The tree on screen is older than a day: worth saying, not worth hiding.
+    var isOld: Bool {
+        guard let scannedAt else { return false }
+        return Date().timeIntervalSince(scannedAt) > 86_400
+    }
+
+    /// For the empty screen: the expired analysis that used to cover the
+    /// selected location, and the name of the folder it was taken from when
+    /// that is a parent rather than the location itself.
+    var expiredAnalysis: (date: Date, parentName: String?)? {
+        guard let selectedRoot else { return nil }
+        let expired = Preferences.shared.expiredScans
+        if let date = expired[selectedRoot] { return (date, nil) }
+        let covering = expired.keys
+            .filter { $0 == "/" || selectedRoot.hasPrefix($0 + "/") }
+            .max { $0.count < $1.count }
+        guard let root = covering, let date = expired[root] else { return nil }
+        return (date, QuickLocation.displayName(of: root))
+    }
+
+    /// Drops cached trees past the limit, files included. Never touches the
+    /// tree on screen: it only leaves when the user moves on, so the limit
+    /// cannot pull figures away from under them.
+    private func purgeExpiredCache() {
+        let expired = cache.filter { isExpired($0.scan.date) }
+        guard !expired.isEmpty else { return }
+        cache.removeAll { isExpired($0.scan.date) }
+        for entry in expired {
+            Preferences.shared.noteExpired(root: entry.path, scannedAt: entry.scan.date)
+            discardSavedScan(of: entry.path)
+        }
     }
 
     /// True when the sidebar points somewhere that has not been analysed.
@@ -1109,7 +1150,7 @@ final class ScanModel {
         } ?? path
         var best: (holder: TreeHolder, node: Int32, date: Date)?
         func consider(_ holder: TreeHolder, _ tree: ScanResult, _ date: Date) {
-            guard !tree.wasCancelled,
+            guard !tree.wasCancelled, !isExpired(date),
                   best.map({ date > $0.date }) ?? true,
                   let node = tree.store.node(atPath: resolved)
                       ?? tree.store.node(atPath: path)
@@ -1833,6 +1874,13 @@ final class ScanModel {
             // An external volume that is not plugged in, a folder renamed: the
             // file is kept, since the volume may well come back.
             guard FileManager.default.fileExists(atPath: scan.rootPath) else { continue }
+            // Past the limit: not loaded, and its file goes — it could only
+            // ever be refused again. Remembered so the empty screen can say so.
+            if isExpired(scan.scannedAt) {
+                Preferences.shared.noteExpired(root: scan.rootPath, scannedAt: scan.scannedAt)
+                discardSavedScan(of: scan.rootPath)
+                continue
+            }
             vetted.append(scan)
         }
 
