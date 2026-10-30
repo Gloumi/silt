@@ -23,8 +23,8 @@
 # published release, so this file is never edited by hand.
 
 cask "silt" do
-  version "0.6.1"
-  sha256 "53af9d4797c99d44282a76d00a3043fa5bec0ff9fb3a76887f1b616c29f02d4d"
+  version "0.7.0"
+  sha256 "2ce82ba9c63beefa26228de920f97eaad4bd714532103a79e198bdb4cf1c187b"
 
   url "https://github.com/Gloumi/silt/releases/download/v#{version}/Silt-#{version}.dmg"
   name "Silt"
