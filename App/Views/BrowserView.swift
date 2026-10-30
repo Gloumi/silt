@@ -434,29 +434,39 @@ private struct EmptyStateView: View {
             Label("Prêt à analyser", systemImage: "chart.pie")
         } description: {
             if let target {
-                Text("Silt va parcourir \(target) et vous montrer où part la place.")
+                Text("Silt va parcourir \(target).")
             } else {
                 Text("Choisissez un volume ou un emplacement dans la barre latérale.")
             }
-            if let expired = model.expiredAnalysis {
-                if let parent = expired.parentName {
-                    Text("La dernière analyse de « \(parent) », \(Format.age(since: expired.date)), est trop ancienne pour être affichée.")
-                } else {
-                    Text("Dernière analyse \(Format.age(since: expired.date)), trop ancienne pour être affichée.")
-                }
-            }
         } actions: {
-            if model.selectedRoot != nil {
-                Button {
-                    model.startSelectedScan()
-                } label: {
-                    Label("Démarrer l'analyse", systemImage: "play.fill")
+            VStack(spacing: 12) {
+                if model.selectedRoot != nil {
+                    Button {
+                        model.startSelectedScan()
+                    } label: {
+                        Label("Démarrer l'analyse", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
+                // A footnote under the button, not part of the pitch: it only
+                // explains why nothing is shown, the button is still the point.
+                if let expired = model.expiredAnalysis {
+                    Text(expiredNote(expired))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
+    }
+
+    private func expiredNote(_ expired: (date: Date, parentName: String?)) -> String {
+        let age = Format.age(since: expired.date)
+        if let parent = expired.parentName {
+            return "Analyse de « \(parent) » trop ancienne (\(age))"
+        }
+        return "Analyse précédente trop ancienne (\(age))"
     }
 
     /// What the button promises to scan, named as the sidebar names it.
